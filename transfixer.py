@@ -11,27 +11,10 @@ import sys
 from datetime import datetime
 import torch
 from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
-# from config import * # Assuming these would be defined here or in a similar config file
+from config import OLLAMA_MODEL, CORRECTION_PROMPT, OLLAMA_API_URL, OLLAMA_OPTIONS
 
-# --- START: Configuration (moved from config.py for this example) ---
-# YOU MUST CONFIGURE THESE
-OLLAMA_MODEL = "phi4-mini"  # Example: "llama3", "phi3", "mistral". Ensure this model is pulled in Ollama.
-CORRECTION_PROMPT = (
-    "Please correct any grammar, spelling, and punctuation errors in the following text. "
-    "Also, improve sentence structure and clarity where needed, while preserving the original meaning. "
-    "The text is a transcription of spoken audio. Focus on readability and accuracy. "
-    "Do not add any conversational fluff or introductory/concluding remarks, just output the corrected text."
-) # Define your correction prompt
-
-# Ollama Configuration
-OLLAMA_API_URL = "http://localhost:11434/api/chat" # Default Ollama API endpoint for chat
-OLLAMA_OPTIONS = { # Options to pass to the Ollama model
-    "temperature": 0.7,
-    "num_ctx": 4096, # Example context window size, adjust based on model
-    # Add other Ollama options here as needed: e.g., top_k, top_p
-}
-
-# Original Configuration variables (kept as is)
+# --- START: Configuration ---
+# Original Configuration variables
 AUDIO_DIR = "audio"
 TRANSCRIPTIONS_DIR = "transcriptions"
 CORRECTED_DIR = "corrected"
