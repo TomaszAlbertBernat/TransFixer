@@ -12,6 +12,7 @@ from datetime import datetime
 import torch
 from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
 from config import OLLAMA_MODEL, CORRECTION_PROMPT, OLLAMA_API_URL, OLLAMA_OPTIONS
+from tqdm import tqdm
 
 # --- START: Configuration ---
 # Original Configuration variables
@@ -223,9 +224,18 @@ def transcribe_file(args):
             logger.info(f"Starting transcription of {audio_path} (attempt {retries + 1}/{MAX_RETRIES})")
             # Ensure Whisper is initialized
             initialize_whisper()
+            
+            # Create a progress bar for this file
+            pbar = tqdm(total=100, desc=f"Transcribing {os.path.basename(audio_path)}", 
+                       leave=False, position=1)
+            
             # Transcribe using the pipeline
             result = whisper_pipeline(audio_path, generate_kwargs={"language": "en", "max_new_tokens": 256}) 
             transcription = result["text"]
+            
+            # Update progress bar to 100% when done
+            pbar.update(100)
+            pbar.close()
             
             ensure_dir(os.path.dirname(trans_path))
             with open(trans_path, "w", encoding="utf-8") as f:
@@ -424,9 +434,11 @@ def main():
             trans_tasks = collect_transcription_tasks()
             if trans_tasks:
                 logger.info(f"Found {len(trans_tasks)} files to transcribe")
-                for i, task in enumerate(trans_tasks, 1):
-                    logger.info(f"Transcribing file {i}/{len(trans_tasks)}: {task[0]}")
-                    transcribe_file(task)
+                # Create a progress bar for overall transcription progress
+                with tqdm(total=len(trans_tasks), desc="Overall Progress", position=0) as pbar:
+                    for task in trans_tasks:
+                        transcribe_file(task)
+                        pbar.update(1)
                 # Clean up Whisper resources after transcription is done
                 cleanup_whisper()
             else:
