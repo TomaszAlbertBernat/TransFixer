@@ -25,7 +25,7 @@ WHISPER_MODEL = "openai/whisper-large-v3-turbo" # Changed to a standard Hugging 
 # --- Ollama Configuration ---
 # Ensure your Ollama instance is running and the model is pulled (e.g., `ollama pull phi3:mini`)
 OLLAMA_API_URL = "http://localhost:11434/api/chat"  # Default Ollama API endpoint for chat
-OLLAMA_MODEL = "phi4-mini"  # Example: "llama3", "phi3", "mistral". Ensure this model is pulled in Ollama.
+OLLAMA_MODEL = "qwen3:8b"  # Example: "llama3", "phi3", "mistral". Ensure this model is pulled in Ollama.
 OLLAMA_OPTIONS = {  # Options to pass to the Ollama model
     "temperature": 0.7,
     "num_ctx": 4096,  # Example context window size, adjust based on model
