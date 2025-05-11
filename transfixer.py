@@ -2,37 +2,142 @@ import os
 import subprocess
 import shutil
 import logging
-from multiprocessing import Pool
-import requests
+from multiprocessing import Pool, set_start_method
+import requests # For Ollama API calls
 import time
 from pathlib import Path
 import signal
 import sys
 from datetime import datetime
-from config import *
+import torch
+from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
+# from config import * # Assuming these would be defined here or in a similar config file
 
-# Configuration
+# --- START: Configuration (moved from config.py for this example) ---
+# YOU MUST CONFIGURE THESE
+OLLAMA_MODEL = "phi4-mini"  # Example: "llama3", "phi3", "mistral". Ensure this model is pulled in Ollama.
+CORRECTION_PROMPT = (
+    "Please correct any grammar, spelling, and punctuation errors in the following text. "
+    "Also, improve sentence structure and clarity where needed, while preserving the original meaning. "
+    "The text is a transcription of spoken audio. Focus on readability and accuracy. "
+    "Do not add any conversational fluff or introductory/concluding remarks, just output the corrected text."
+) # Define your correction prompt
+
+# Ollama Configuration
+OLLAMA_API_URL = "http://localhost:11434/api/chat" # Default Ollama API endpoint for chat
+OLLAMA_OPTIONS = { # Options to pass to the Ollama model
+    "temperature": 0.7,
+    "num_ctx": 4096, # Example context window size, adjust based on model
+    # Add other Ollama options here as needed: e.g., top_k, top_p
+}
+
+# Original Configuration variables (kept as is)
 AUDIO_DIR = "audio"
 TRANSCRIPTIONS_DIR = "transcriptions"
 CORRECTED_DIR = "corrected"
 LOG_DIR = "logs"
 LOG_FILE = os.path.join(LOG_DIR, "transcription_errors.log")
 MIN_CHARS = 50
-MAX_RETRIES = 3
-WHISPER_MODEL = "base"  # Use smaller model for less GPU usage (e.g., "tiny" or "base")
-LM_STUDIO_API = "http://localhost:1234/v1/chat/completions"
+MAX_RETRIES = 3 # For Whisper transcription
+WHISPER_MODEL = "openai/whisper-large-v3-turbo" # Changed from v3-turbo as it might not be a standard HF identifier without API key logic
 CHECK_INTERVAL = 300  # Seconds between processing cycles
+# --- END: Configuration ---
+
+# Set multiprocessing start method to 'spawn' for CUDA compatibility
+try:
+    set_start_method('spawn')
+except RuntimeError:
+    # Method may have been set already
+    pass
 
 # Set up logging
 os.makedirs(LOG_DIR, exist_ok=True)
-logging.basicConfig(
-    filename=LOG_FILE,
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
-)
+
+# Create formatters
+file_formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+console_formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+
+# Create handlers
+file_handler = logging.FileHandler(LOG_FILE)
+file_handler.setFormatter(file_formatter)
+
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(console_formatter)
+
+# Configure root logger
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+logger.addHandler(file_handler)
+logger.addHandler(console_handler)
 
 # Global variable to track lock files for cleanup
 active_lock_files = set()
+
+# Global variables for Whisper model and pipeline
+whisper_model = None
+whisper_processor = None
+whisper_pipeline = None
+
+def initialize_whisper():
+    """Initialize Whisper model, processor and pipeline."""
+    global whisper_model, whisper_processor, whisper_pipeline
+    
+    if whisper_model is not None:
+        return  # Already initialized
+        
+    logger.info("Initializing Whisper model and processor...")
+    device = "cuda:0" if torch.cuda.is_available() else "cpu"
+    logger.info(f"Using device: {device}")
+    torch_dtype = torch.float16 if torch.cuda.is_available() and device != "cpu" else torch.float32
+
+    logger.info(f"Loading model {WHISPER_MODEL}...")
+    whisper_model = AutoModelForSpeechSeq2Seq.from_pretrained(
+        WHISPER_MODEL,
+        torch_dtype=torch_dtype,
+        low_cpu_mem_usage=True if device != "cpu" else False,
+        use_safetensors=True
+    )
+    whisper_model.to(device)
+    logger.info("Model loaded successfully")
+
+    logger.info("Loading processor...")
+    whisper_processor = AutoProcessor.from_pretrained(WHISPER_MODEL)
+    logger.info("Processor loaded successfully")
+
+    # Create the pipeline
+    logger.info("Creating Whisper pipeline...")
+    whisper_pipeline = pipeline(
+        "automatic-speech-recognition",
+        model=whisper_model,
+        tokenizer=whisper_processor.tokenizer,
+        feature_extractor=whisper_processor.feature_extractor,
+        chunk_length_s=30,
+        batch_size=16 if device != "cpu" else 4,
+        return_timestamps=True,
+        torch_dtype=torch_dtype,
+        device=device,
+    )
+    logger.info("Pipeline created successfully")
+
+def cleanup_whisper():
+    """Clean up Whisper model resources."""
+    global whisper_model, whisper_processor, whisper_pipeline
+    
+    if whisper_model is not None:
+        logger.info("Cleaning up Whisper model resources...")
+        # Move model to CPU first to free GPU memory
+        if hasattr(whisper_model, 'to'):
+            whisper_model.to('cpu')
+        del whisper_model
+        del whisper_processor
+        del whisper_pipeline
+        whisper_model = None
+        whisper_processor = None
+        whisper_pipeline = None
+        # Force CUDA cache clear if available
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        logger.info("Whisper resources cleaned up successfully")
 
 def create_backup():
     """Create a backup of transcriptions and corrected files."""
@@ -40,40 +145,51 @@ def create_backup():
     backup_dir = os.path.join("backup", timestamp)
     os.makedirs(backup_dir, exist_ok=True)
     
+    logger.info(f"Creating backup in {backup_dir}")
+    
     # Backup transcriptions
     trans_backup = os.path.join(backup_dir, "transcriptions")
     if os.path.exists(TRANSCRIPTIONS_DIR):
         shutil.copytree(TRANSCRIPTIONS_DIR, trans_backup, dirs_exist_ok=True)
+        logger.info("Transcriptions backed up successfully")
     
     # Backup corrected files
     corr_backup = os.path.join(backup_dir, "corrected")
     if os.path.exists(CORRECTED_DIR):
         shutil.copytree(CORRECTED_DIR, corr_backup, dirs_exist_ok=True)
+        logger.info("Corrected files backed up successfully")
     
-    logging.info(f"Created backup in {backup_dir}")
     return backup_dir
 
 def cleanup_old_backups(max_backups=5):
     """Remove old backups keeping only the most recent ones."""
-    backup_dirs = sorted([d for d in os.listdir("backup") if os.path.isdir(os.path.join("backup", d))])
+    backup_base_dir = "backup"
+    if not os.path.exists(backup_base_dir):
+        return
+    backup_dirs = sorted([d for d in os.listdir(backup_base_dir) if os.path.isdir(os.path.join(backup_base_dir, d))])
     if len(backup_dirs) > max_backups:
+        logger.info(f"Cleaning up old backups. Keeping {max_backups} most recent backups.")
         for old_dir in backup_dirs[:-max_backups]:
-            shutil.rmtree(os.path.join("backup", old_dir))
-            logging.info(f"Removed old backup: {old_dir}")
+            shutil.rmtree(os.path.join(backup_base_dir, old_dir))
+            logger.info(f"Removed old backup: {old_dir}")
 
 def cleanup_lock_files():
     """Clean up any remaining lock files."""
-    for lock_file in active_lock_files:
+    # Create a copy of the set to avoid issues if the set is modified during iteration elsewhere (though less likely here)
+    locks_to_remove = list(active_lock_files)
+    for lock_file in locks_to_remove:
         try:
             if os.path.exists(lock_file):
                 os.remove(lock_file)
-                logging.info(f"Cleaned up lock file: {lock_file}")
+                logger.info(f"Cleaned up lock file: {lock_file}")
+            if lock_file in active_lock_files: # Check before removing
+                 active_lock_files.remove(lock_file)
         except Exception as e:
-            logging.error(f"Error cleaning up lock file {lock_file}: {e}")
+            logger.error(f"Error cleaning up lock file {lock_file}: {e}")
 
 def signal_handler(signum, frame):
     """Handle termination signals."""
-    logging.info(f"Received signal {signum}, cleaning up...")
+    logger.info(f"Received signal {signum}, cleaning up...")
     cleanup_lock_files()
     sys.exit(0)
 
@@ -92,123 +208,183 @@ def is_valid_transcription(file_path):
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             content = f.read()
-            return len(content) > MIN_CHARS
+            return len(content.strip()) >= MIN_CHARS # Use strip() to avoid counting only whitespace
     except Exception as e:
-        logging.error(f"Error reading transcription {file_path}: {e}")
+        logger.error(f"Error reading transcription {file_path}: {e}")
         return False
 
 def transcribe_file(args):
-    """Transcribe an audio file with Whisper-Turbo."""
+    """Transcribe an audio file with Whisper using Hugging Face transformers."""
     audio_path, trans_path = args
     lock_file = audio_path + ".lock"
     
-    # Skip if valid transcription exists or file is being processed
-    if os.path.exists(lock_file) or (os.path.exists(trans_path) and is_valid_transcription(trans_path)):
-        logging.info(f"Skipping transcription for {audio_path}: already processed or locked")
+    if os.path.exists(lock_file):
+        logger.info(f"Skipping transcription for {audio_path}: lock file exists.")
         return
     
-    # Create lock file
+    if os.path.exists(trans_path) and is_valid_transcription(trans_path):
+        logger.info(f"Skipping transcription for {audio_path}: valid transcription already exists.")
+        return
+    
     try:
-        open(lock_file, "w").close()
+        Path(lock_file).touch()
         active_lock_files.add(lock_file)
     except Exception as e:
-        logging.error(f"Error creating lock file for {audio_path}: {e}")
+        logger.error(f"Error creating lock file for {audio_path}: {e}")
         return
     
     retries = 0
+    success = False
     while retries < MAX_RETRIES:
         try:
-            # Run Whisper-Turbo with specified model
-            result = subprocess.run(
-                ["whisper-turbo", audio_path, "--model", WHISPER_MODEL, "--output", trans_path],
-                check=True,
-                capture_output=True,
-                text=True
-            )
+            logger.info(f"Starting transcription of {audio_path} (attempt {retries + 1}/{MAX_RETRIES})")
+            # Ensure Whisper is initialized
+            initialize_whisper()
+            # Transcribe using the pipeline
+            result = whisper_pipeline(audio_path, generate_kwargs={"language": "en", "max_new_tokens": 256}) 
+            transcription = result["text"]
+            
+            ensure_dir(os.path.dirname(trans_path))
+            with open(trans_path, "w", encoding="utf-8") as f:
+                f.write(transcription)
+            
             if is_valid_transcription(trans_path):
-                logging.info(f"Successfully transcribed {audio_path}")
+                logger.info(f"Successfully transcribed {audio_path}")
+                success = True
                 break
             else:
-                logging.warning(f"Transcription too short for {audio_path}, retrying...")
+                logger.warning(f"Transcription too short for {audio_path} (length {len(transcription.strip())}), retrying...")
                 retries += 1
-        except subprocess.CalledProcessError as e:
-            logging.error(f"Transcription failed for {audio_path}: {e.stderr}")
-            retries += 1
         except Exception as e:
-            logging.error(f"Unexpected error during transcription of {audio_path}: {e}")
+            logger.error(f"Unexpected error during transcription of {audio_path}: {e}")
             retries += 1
+        time.sleep(5)
     
-    if retries >= MAX_RETRIES:
-        logging.error(f"Max retries reached for {audio_path}")
+    if not success:
+        logger.error(f"Max retries reached for {audio_path}. Transcription failed or was too short.")
     
-    # Remove lock file
     try:
         if os.path.exists(lock_file):
             os.remove(lock_file)
+        if lock_file in active_lock_files:
             active_lock_files.remove(lock_file)
     except Exception as e:
-        logging.error(f"Error removing lock file for {audio_path}: {e}")
+        logger.error(f"Error removing lock file for {audio_path}: {e}")
 
 def correct_file(args):
-    """Correct a transcription using LM Studio API."""
+    """Correct a transcription using Ollama API."""
     trans_path, corrected_path = args
-    lock_file = trans_path + ".lock"
-    
-    # Skip if corrected file exists or file is being processed
-    if os.path.exists(lock_file) or os.path.exists(corrected_path):
-        logging.info(f"Skipping correction for {trans_path}: already processed or locked")
+    lock_file = trans_path + ".correction.lock" # Use a different lock suffix for correction
+
+    if os.path.exists(lock_file):
+        logger.info(f"Skipping correction for {trans_path}: lock file exists.")
+        return
+
+    # Skip if corrected file exists (no need to check content length for corrected files, assume correction is good)
+    if os.path.exists(corrected_path):
+        logger.info(f"Skipping correction for {trans_path}: corrected file already exists.")
         return
     
-    # Create lock file
+    if not is_valid_transcription(trans_path): # Don't correct invalid or too short transcriptions
+        logger.warning(f"Skipping correction for {trans_path}: source transcription is invalid or too short.")
+        return
+
     try:
-        open(lock_file, "w").close()
+        Path(lock_file).touch()
         active_lock_files.add(lock_file)
     except Exception as e:
-        logging.error(f"Error creating lock file for {trans_path}: {e}")
+        logger.error(f"Error creating lock file for correction of {trans_path}: {e}")
         return
     
     try:
+        logger.info(f"Starting correction of {trans_path} using Ollama model {OLLAMA_MODEL}")
         with open(trans_path, "r", encoding="utf-8") as f:
-            text = f.read()
+            text_to_correct = f.read()
         
         payload = {
-            "model": "local-model",
-            "messages": [{"role": "user", "content": f"{CORRECTION_PROMPT}\n\n{text}"}],
-            **LM_STUDIO_PARAMS
+            "model": OLLAMA_MODEL,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "You are a helpful assistant that corrects transcriptions."
+                },
+                {
+                    "role": "user",
+                    "content": f"{CORRECTION_PROMPT}\n\n---\n\n{text_to_correct}"
+                }
+            ],
+            "options": OLLAMA_OPTIONS,
+            "stream": False # We want the full response at once
         }
         
-        response = requests.post(LM_STUDIO_API, json=payload, timeout=300)
-        response.raise_for_status()
-        corrected_text = response.json()["choices"][0]["message"]["content"]
+        logger.info(f"Sending request to Ollama API: {OLLAMA_API_URL}")
+        response = requests.post(OLLAMA_API_URL, json=payload, timeout=300) # 5 min timeout
+        response.raise_for_status() # Will raise an HTTPError for bad responses (4XX or 5XX)
         
-        # Save corrected transcription
+        response_data = response.json()
+        corrected_text = response_data.get("message", {}).get("content", "")
+
+        if not corrected_text.strip():
+            logger.warning(f"Ollama returned empty correction for {trans_path}. Original text: {text_to_correct[:100]}...")
+            # Optionally, copy original if correction is empty, or log as error
+            # For now, we just won't write an empty file.
+            return
+
         ensure_dir(os.path.dirname(corrected_path))
         with open(corrected_path, "w", encoding="utf-8") as f:
-            f.write(corrected_text)
-        logging.info(f"Successfully corrected {trans_path}")
-    except requests.RequestException as e:
-        logging.error(f"Correction failed for {trans_path}: {e}")
+            f.write(corrected_text.strip())
+        logger.info(f"Successfully corrected {trans_path} and saved to {corrected_path}")
+
+    except requests.exceptions.ConnectionError as e:
+        logger.error(f"Ollama API connection error for {trans_path}: {e}. Ensure Ollama is running and reachable at {OLLAMA_API_URL}.")
+    except requests.exceptions.Timeout:
+        logger.error(f"Ollama API request timed out for {trans_path}.")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Ollama API request failed for {trans_path}: {e}")
+        if e.response is not None:
+            logger.error(f"Ollama API Response: {e.response.text}")
+    except KeyError as e:
+        logger.error(f"Unexpected response structure from Ollama for {trans_path}. Missing key: {e}. Response: {response_data}")
     except Exception as e:
-        logging.error(f"Unexpected error during correction of {trans_path}: {e}")
+        logger.error(f"Unexpected error during correction of {trans_path}: {e}")
     finally:
-        # Remove lock file
         try:
             if os.path.exists(lock_file):
                 os.remove(lock_file)
+            if lock_file in active_lock_files:
                 active_lock_files.remove(lock_file)
         except Exception as e:
-            logging.error(f"Error removing lock file for {trans_path}: {e}")
+            logger.error(f"Error removing correction lock file for {trans_path}: {e}")
+
 
 def collect_transcription_tasks():
     """Collect audio files needing transcription."""
     tasks = []
+    logger.info("Scanning for audio files to transcribe...")
     for root, _, files in os.walk(AUDIO_DIR):
         for file in files:
-            if file.endswith(".mp3"):
+            # Add more audio extensions if needed
+            if file.lower().endswith((".mp3", ".wav", ".m4a", ".flac")):
                 audio_path = os.path.join(root, file)
-                rel_path = os.path.relpath(audio_path, AUDIO_DIR)
-                trans_path = os.path.join(TRANSCRIPTIONS_DIR, rel_path.replace(".mp3", ".txt"))
-                ensure_dir(os.path.dirname(trans_path))
+                base_filename, _ = os.path.splitext(file)
+                rel_path_dir = os.path.relpath(root, AUDIO_DIR)
+                
+                # Handle cases where rel_path_dir might be '.' for files directly in AUDIO_DIR
+                if rel_path_dir == ".":
+                    trans_dir = TRANSCRIPTIONS_DIR
+                else:
+                    trans_dir = os.path.join(TRANSCRIPTIONS_DIR, rel_path_dir)
+                
+                trans_path = os.path.join(trans_dir, base_filename + ".txt")
+                
+                ensure_dir(os.path.dirname(trans_path)) # Ensure specific subdirectory exists
+                
+                # Check for lock file first
+                lock_file = audio_path + ".lock"
+                if os.path.exists(lock_file):
+                    logger.info(f"Skipping task for {audio_path}: lock file exists.")
+                    continue
+
                 if not (os.path.exists(trans_path) and is_valid_transcription(trans_path)):
                     tasks.append((audio_path, trans_path))
     return tasks
@@ -216,65 +392,97 @@ def collect_transcription_tasks():
 def collect_correction_tasks():
     """Collect transcriptions needing correction."""
     tasks = []
+    logger.info("Scanning for transcriptions to correct...")
     for root, _, files in os.walk(TRANSCRIPTIONS_DIR):
         for file in files:
-            if file.endswith(".txt"):
+            if file.lower().endswith(".txt"):
                 trans_path = os.path.join(root, file)
                 rel_path = os.path.relpath(trans_path, TRANSCRIPTIONS_DIR)
                 corrected_path = os.path.join(CORRECTED_DIR, rel_path)
+
+                ensure_dir(os.path.dirname(corrected_path)) # Ensure specific subdirectory exists
+
+                # Check for lock file first
+                lock_file = trans_path + ".correction.lock"
+                if os.path.exists(lock_file):
+                    logger.info(f"Skipping task for {trans_path}: correction lock file exists.")
+                    continue
+                
+                # Only add task if corrected file doesn't exist AND source transcription is valid
                 if not os.path.exists(corrected_path) and is_valid_transcription(trans_path):
-                    ensure_dir(os.path.dirname(corrected_path))
                     tasks.append((trans_path, corrected_path))
     return tasks
 
 def main():
     """Main loop to process audio files in phases."""
+    logger.info("Initializing directories...")
     ensure_dir(AUDIO_DIR)
     ensure_dir(TRANSCRIPTIONS_DIR)
     ensure_dir(CORRECTED_DIR)
     ensure_dir("backup")
     
+    if not OLLAMA_MODEL or not CORRECTION_PROMPT:
+        logger.error("OLLAMA_MODEL and CORRECTION_PROMPT must be set in the configuration.")
+        sys.exit(1)
+
+    logger.info(f"Using Ollama model: {OLLAMA_MODEL} via {OLLAMA_API_URL}")
+
     while True:
         try:
-            logging.info("Starting processing cycle")
+            logger.info("="*50)
+            logger.info(f"Starting new processing cycle at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            logger.info("="*50)
             
-            # Create backup before processing
             create_backup()
             cleanup_old_backups()
             
             # Phase 1: Transcribe audio files
+            logger.info("-" * 10 + " Phase 1: Transcription " + "-" * 10)
             trans_tasks = collect_transcription_tasks()
             if trans_tasks:
-                logging.info(f"Found {len(trans_tasks)} files to transcribe")
-                with Pool(processes=1) as pool:  # Single process for GPU efficiency
-                    pool.map(transcribe_file, trans_tasks)
+                logger.info(f"Found {len(trans_tasks)} files to transcribe")
+                for i, task in enumerate(trans_tasks, 1):
+                    logger.info(f"Transcribing file {i}/{len(trans_tasks)}: {task[0]}")
+                    transcribe_file(task)
+                # Clean up Whisper resources after transcription is done
+                cleanup_whisper()
             else:
-                logging.info("No files to transcribe")
+                logger.info("No new audio files to transcribe")
+                # Ensure Whisper is not loaded if not needed
+                cleanup_whisper()
             
             # Phase 2: Correct transcriptions
+            logger.info("-" * 10 + " Phase 2: Correction " + "-" * 10)
             correct_tasks = collect_correction_tasks()
             if correct_tasks:
-                logging.info(f"Found {len(correct_tasks)} transcriptions to correct")
-                with Pool(processes=1) as pool:  # Single process for API stability
+                logger.info(f"Found {len(correct_tasks)} transcriptions to correct")
+                with Pool(processes=1) as pool:
                     pool.map(correct_file, correct_tasks)
             else:
-                logging.info("No transcriptions to correct")
+                logger.info("No new transcriptions to correct")
             
-            logging.info(f"Cycle complete, sleeping for {CHECK_INTERVAL} seconds")
+            logger.info(f"Cycle complete. Sleeping for {CHECK_INTERVAL} seconds.")
             time.sleep(CHECK_INTERVAL)
+
         except Exception as e:
-            logging.error(f"Error in main loop: {e}")
+            logger.critical(f"Critical error in main loop: {e}", exc_info=True)
+            logger.info("Performing emergency cleanup of lock files due to critical error.")
             cleanup_lock_files()
-            time.sleep(60)  # Wait a minute before retrying after an error
+            cleanup_whisper()  # Also clean up Whisper resources on error
+            logger.info(f"Sleeping for 60 seconds before attempting to restart loop...")
+            time.sleep(60)
 
 if __name__ == "__main__":
     try:
+        logger.info("Starting TransFixer (Ollama Edition)...")
         main()
     except KeyboardInterrupt:
-        logging.info("Script terminated by user")
-        cleanup_lock_files()
-        exit(0)
+        logger.info("Script terminated by user (Ctrl+C)")
     except Exception as e:
-        logging.error(f"Script terminated due to error: {e}")
+        logger.error(f"Script terminated due to an unhandled error: {e}", exc_info=True)
+    finally:
+        logger.info("Performing final cleanup of lock files...")
         cleanup_lock_files()
-        exit(1)
+        cleanup_whisper()  # Clean up Whisper resources on exit
+        logger.info("Exiting TransFixer.")
+        sys.exit(0)
