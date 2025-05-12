@@ -13,6 +13,7 @@ import torch
 from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
 from config import OLLAMA_MODEL, CORRECTION_PROMPT, OLLAMA_API_URL, OLLAMA_OPTIONS
 from tqdm import tqdm
+import re
 
 # --- START: Configuration ---
 # Original Configuration variables
@@ -303,7 +304,7 @@ def correct_file(args):
                 },
                 {
                     "role": "user",
-                    "content": f"{CORRECTION_PROMPT}\n\n---\n\n{text_to_correct}"
+                    "content": f"File: {os.path.basename(trans_path)}\n\n{CORRECTION_PROMPT}\n\n---\n\n{text_to_correct}"
                 }
             ],
             "options": OLLAMA_OPTIONS,
@@ -316,6 +317,8 @@ def correct_file(args):
         
         response_data = response.json()
         corrected_text = response_data.get("message", {}).get("content", "")
+        # Remove <thinking>...</thinking> blocks if present
+        corrected_text = re.sub(r'<think>[\s\S]*?</think>', '', corrected_text, flags=re.IGNORECASE)
 
         if not corrected_text.strip():
             logger.warning(f"Ollama returned empty correction for {trans_path}. Original text: {text_to_correct[:100]}...")

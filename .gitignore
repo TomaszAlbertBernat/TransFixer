@@ -26,6 +26,7 @@ coverage.xml
 .pytest_cache/
 MANIFEST
 
+
 # Project-specific Data Directories (from your config.py)
 # These directories will contain generated files or input media
 # and should generally not be versioned.
@@ -36,6 +37,7 @@ audio/
 transcriptions/
 corrected/
 backup/
+Nowyfolder
 
 # Log files and directories
 logs/

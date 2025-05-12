@@ -28,7 +28,7 @@ OLLAMA_API_URL = "http://localhost:11434/api/chat"  # Default Ollama API endpoin
 OLLAMA_MODEL = "qwen3:8b"  # Example: "llama3", "phi3", "mistral". Ensure this model is pulled in Ollama.
 OLLAMA_OPTIONS = {  # Options to pass to the Ollama model
     "temperature": 0.7,
-    "num_ctx": 4096,  # Example context window size, adjust based on model
+    "num_ctx": 9000,  # Example context window size, adjust based on model
     # Add other Ollama options here as needed: e.g., top_k, top_p
 }
 
