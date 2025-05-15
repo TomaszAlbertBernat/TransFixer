@@ -182,3 +182,6 @@ Edit `config.py` to modify:
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
+
+* some magic words for yt-dlp:
+cat Linki.txt | xargs -n1 -P 6 yt-dlp -o './audio/%(playlist)s/%(title)s.%(ext)s' -i --extract-audio --audio-format mp3     

@@ -231,7 +231,7 @@ def transcribe_file(args):
                        leave=False, position=1)
             
             # Transcribe using the pipeline
-            result = whisper_pipeline(audio_path, generate_kwargs={"language": "en", "max_new_tokens": 256}) 
+            result = whisper_pipeline(audio_path, generate_kwargs={"max_new_tokens": 256}) 
             transcription = result["text"]
             
             # Update progress bar to 100% when done
@@ -370,7 +370,7 @@ def collect_transcription_tasks():
                     trans_dir = TRANSCRIPTIONS_DIR
                 else:
                     trans_dir = os.path.join(TRANSCRIPTIONS_DIR, rel_path_dir)
-                
+                 
                 trans_path = os.path.join(trans_dir, base_filename + ".txt")
                 
                 ensure_dir(os.path.dirname(trans_path)) # Ensure specific subdirectory exists
