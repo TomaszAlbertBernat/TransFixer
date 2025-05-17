@@ -21,8 +21,12 @@ def parse_arguments():
     parser = argparse.ArgumentParser(description='TransFixer - Audio Transcription and Correction System')
     parser.add_argument('--workers', type=int, default=NUM_PARALLEL_WHISPER,
                       help=f'Number of parallel Whisper instances (default: {NUM_PARALLEL_WHISPER})')
+    parser.add_argument('--batch-size', type=int, default=4,
+                      help='Number of audio files to process in a single batch (default: 4)')
     parser.add_argument('--skip-transcribing', action='store_true',
                       help='Skip the transcription phase and proceed directly to correction')
+    parser.add_argument('--use-batching', action='store_true',
+                      help='Use batched processing instead of multiple workers (more memory efficient)')
     return parser.parse_args()
 
 # --- START: Configuration ---
@@ -73,8 +77,13 @@ whisper_model = None
 whisper_processor = None
 whisper_pipeline = None
 
-def initialize_whisper():
-    """Initialize Whisper model, processor and pipeline."""
+def initialize_whisper(batch_size=None):
+    """
+    Initialize Whisper model, processor and pipeline.
+    
+    Args:
+        batch_size: Optional batch size to use for the pipeline
+    """
     global whisper_model, whisper_processor, whisper_pipeline
     
     if whisper_model is not None:
@@ -93,26 +102,80 @@ def initialize_whisper():
         use_safetensors=True
     )
     whisper_model.to(device)
+    
+    # Apply torch.compile for faster inference if available (requires PyTorch 2.0+)
+    # Note: torch.compile is not compatible with chunked processing
+    use_compile = False  # Set to True if you prefer speed over handling very long audio files
+    
+    if use_compile and hasattr(torch, 'compile') and device != "cpu":
+        try:
+            logger.info("Applying torch.compile() to model for faster inference...")
+            whisper_model = torch.compile(whisper_model)
+            logger.info("Model compilation successful")
+        except Exception as e:
+            logger.warning(f"Could not compile model with torch.compile(): {e}")
+    
     logger.info("Model loaded successfully")
 
     logger.info("Loading processor...")
     whisper_processor = AutoProcessor.from_pretrained(WHISPER_MODEL)
     logger.info("Processor loaded successfully")
 
-    # Create the pipeline
-    logger.info("Creating Whisper pipeline...")
+    # Determine batch size for pipeline
+    if batch_size is None:
+        # Default batch sizes based on device
+        pipeline_batch_size = 16 if device != "cpu" else 4
+    else:
+        pipeline_batch_size = batch_size
+    
+    logger.info(f"Creating Whisper pipeline with batch_size={pipeline_batch_size}...")
+    
+    # Create the pipeline with optimized parameters
     whisper_pipeline = pipeline(
         "automatic-speech-recognition",
         model=whisper_model,
         tokenizer=whisper_processor.tokenizer,
         feature_extractor=whisper_processor.feature_extractor,
         chunk_length_s=30,
-        batch_size=16 if device != "cpu" else 4,
+        batch_size=pipeline_batch_size,
         return_timestamps=True,
         torch_dtype=torch_dtype,
         device=device,
+        # Additional parameters to improve GPU utilization
+        generate_kwargs={
+            "max_new_tokens": 256,
+            "do_sample": False,
+            "use_cache": True
+        }
     )
+    
+    # Set chunk length based on available memory
+    if device != "cpu":
+        try:
+            # Get available GPU memory and set chunk size proportionally
+            total_mem = torch.cuda.get_device_properties(device).total_memory
+            allocated_mem = torch.cuda.memory_allocated(device)
+            available_mem = total_mem - allocated_mem
+            
+            # Log memory information in GB for better readability
+            logger.info(f"Total GPU memory: {total_mem / (1024**3):.2f}GB")
+            logger.info(f"Available GPU memory: {available_mem / (1024**3):.2f}GB")
+            
+            # Use larger chunks if we have more memory available
+            if available_mem > 6 * 1024 * 1024 * 1024:  # > 6GB free
+                whisper_pipeline.model.config.forced_decoder_ids = None  # Allow model to decide
+                logger.info("Using optimized settings for high-memory GPU")
+            elif available_mem < 2 * 1024 * 1024 * 1024:  # < 2GB free
+                # Use smaller chunks and more aggressive memory saving
+                whisper_pipeline.chunk_length_s = 15
+                logger.info("Using conservative settings for low-memory GPU")
+        except Exception as e:
+            logger.warning(f"Error optimizing for GPU memory: {e}")
+    
     logger.info("Pipeline created successfully")
+    
+    # Return batch size actually used
+    return pipeline_batch_size
 
 def cleanup_whisper():
     """Clean up Whisper model resources."""
@@ -120,19 +183,36 @@ def cleanup_whisper():
     
     if whisper_model is not None:
         logger.info("Cleaning up Whisper model resources...")
-        # Move model to CPU first to free GPU memory
-        if hasattr(whisper_model, 'to'):
-            whisper_model.to('cpu')
-        del whisper_model
-        del whisper_processor
-        del whisper_pipeline
-        whisper_model = None
-        whisper_processor = None
-        whisper_pipeline = None
-        # Force CUDA cache clear if available
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        logger.info("Whisper resources cleaned up successfully")
+        try:
+            # Move model to CPU first to free GPU memory
+            if hasattr(whisper_model, 'to') and torch.cuda.is_available():
+                whisper_model.to('cpu')
+                
+            # Delete model components
+            del whisper_model
+            del whisper_processor
+            del whisper_pipeline
+            whisper_model = None
+            whisper_processor = None
+            whisper_pipeline = None
+            
+            # Force CUDA cache clear if available
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                
+            # Additional memory cleanup
+            import gc
+            gc.collect()
+            
+            if torch.cuda.is_available():
+                allocated_mem = torch.cuda.memory_allocated(0)
+                total_mem = torch.cuda.get_device_properties(0).total_memory
+                available_mem = total_mem - allocated_mem
+                logger.info(f"GPU memory after cleanup: {allocated_mem / (1024**3):.2f}GB used, {available_mem / (1024**3):.2f}GB available")
+                
+            logger.info("Whisper resources cleaned up successfully")
+        except Exception as e:
+            logger.error(f"Error during Whisper cleanup: {e}")
 
 def create_backup():
     """Create a backup of transcriptions and corrected files."""
@@ -419,14 +499,182 @@ def collect_correction_tasks():
                     tasks.append((trans_path, corrected_path))
     return tasks
 
+def transcribe_batch(batch_tasks, batch_size=4):
+    """
+    Transcribe a batch of audio files using a single Whisper model instance.
+    
+    Args:
+        batch_tasks: List of (audio_path, trans_path) tuples
+        batch_size: Size of batches to process
+        
+    Returns:
+        List of results with success/failure information
+    """
+    results = []
+    
+    # Skip if batch is empty
+    if not batch_tasks:
+        return results
+    
+    # Create lock files for all tasks in the batch
+    lock_files = []
+    valid_tasks = []
+    
+    for audio_path, trans_path in batch_tasks:
+        lock_file = audio_path + ".lock"
+        
+        # Skip if lock file exists or transcription already exists
+        if os.path.exists(lock_file):
+            logger.info(f"Skipping transcription for {audio_path}: lock file exists.")
+            continue
+            
+        if os.path.exists(trans_path) and is_valid_transcription(trans_path):
+            logger.info(f"Skipping transcription for {audio_path}: valid transcription already exists.")
+            continue
+        
+        try:
+            Path(lock_file).touch()
+            active_lock_files.add(lock_file)
+            lock_files.append(lock_file)
+            valid_tasks.append((audio_path, trans_path))
+        except Exception as e:
+            logger.error(f"Error creating lock file for {audio_path}: {e}")
+            continue
+    
+    if not valid_tasks:
+        return results
+    
+    try:
+        # Initialize Whisper model with proper batch size
+        initialize_whisper(batch_size=batch_size)
+        
+        # Get all audio paths and create a mapping to trans_paths
+        audio_paths = [task[0] for task in valid_tasks]
+        trans_path_map = {task[0]: task[1] for task in valid_tasks}
+        
+        logger.info(f"Processing batch of {len(audio_paths)} files at once with batch_size={batch_size}")
+        
+        with tqdm(total=len(valid_tasks), desc="Batch transcription", leave=False, position=1) as batch_pbar:
+            # Log memory usage before batch
+            if torch.cuda.is_available():
+                before_mem = torch.cuda.memory_allocated() / (1024**2)
+                logger.info(f"GPU memory before batch: {before_mem:.2f}MB")
+            
+            try:
+                # Process all files in a single call - this is the key change
+                # The pipeline will handle batching internally based on batch_size
+                batch_results = whisper_pipeline(
+                    audio_paths,
+                    batch_size=batch_size,
+                    generate_kwargs={
+                        "max_new_tokens": 256,
+                        "do_sample": False,
+                        "use_cache": True 
+                    }
+                )
+                
+                # Log memory usage after batch
+                if torch.cuda.is_available():
+                    after_mem = torch.cuda.memory_allocated() / (1024**2)
+                    logger.info(f"GPU memory after batch: {after_mem:.2f}MB")
+                    logger.info(f"Batch memory delta: {after_mem - before_mem:.2f}MB")
+                
+                # Handle results
+                for i, (audio_path, result) in enumerate(zip(audio_paths, batch_results)):
+                    trans_path = trans_path_map[audio_path]
+                    transcription = result["text"]
+                    
+                    # Save transcription
+                    ensure_dir(os.path.dirname(trans_path))
+                    with open(trans_path, "w", encoding="utf-8") as f:
+                        f.write(transcription)
+                    
+                    if is_valid_transcription(trans_path):
+                        logger.info(f"Successfully transcribed {audio_path}")
+                        results.append((audio_path, True, None))
+                    else:
+                        logger.warning(f"Transcription too short for {audio_path} (length {len(transcription.strip())})")
+                        results.append((audio_path, False, "Transcription too short"))
+                    
+                    batch_pbar.update(1)
+                    
+            except Exception as e:
+                logger.error(f"Error processing batch: {e}")
+                # Mark all files in the failed batch as failed
+                for audio_path, _ in valid_tasks:
+                    results.append((audio_path, False, str(e)))
+                    batch_pbar.update(1)
+    
+    except Exception as e:
+        logger.error(f"Batch processing error: {e}")
+    finally:
+        # Clean up all lock files
+        for lock_file in lock_files:
+            try:
+                if os.path.exists(lock_file):
+                    os.remove(lock_file)
+                if lock_file in active_lock_files:
+                    active_lock_files.remove(lock_file)
+            except Exception as e:
+                logger.error(f"Error removing lock file {lock_file}: {e}")
+    
+    return results
+
 def main():
     """Main loop to process audio files in phases."""
     # Parse command line arguments
     args = parse_arguments()
     num_workers = args.workers
+    batch_size = args.batch_size
+    use_batching = args.use_batching
     skip_transcribing = args.skip_transcribing
     
-    logger.info(f"Starting with {num_workers} parallel Whisper instances")
+    # Calculate optimal batch size based on VRAM if using batching
+    if use_batching and torch.cuda.is_available():
+        try:
+            # Simple heuristic: 
+            # Whisper v3 turbo needs ~5GB for a single stream
+            # Leave at least 2GB buffer for other operations
+            total_mem = torch.cuda.get_device_properties(0).total_memory / (1024**3)  # GB
+            
+            # Better method to estimate available memory
+            # First run a small allocation to initialize CUDA context
+            torch.cuda.empty_cache()
+            dummy = torch.ones(1).cuda()
+            del dummy
+            torch.cuda.empty_cache()
+            
+            # Now get allocated memory after context initialization
+            allocated_mem = torch.cuda.memory_allocated(0) / (1024**3)
+            # Available memory is total minus what's already allocated
+            available_mem = total_mem - allocated_mem
+            
+            logger.info(f"GPU memory: total={total_mem:.1f}GB, allocated={allocated_mem:.1f}GB, available={available_mem:.1f}GB")
+            
+            # Start with available memory, subtract buffer for safety
+            usable_mem = available_mem - 1  # Reduce buffer from 2GB to 1GB
+            # Reduce per-stream estimate from 5GB to 2.5GB based on observed usage
+            mem_per_stream = 2.5
+            max_streams = max(1, int(usable_mem / mem_per_stream))
+            
+            # Adjust batch size if needed, don't go below 1
+            suggested_batch_size = max(1, min(batch_size, max_streams))
+            
+            if suggested_batch_size != batch_size:
+                logger.info(f"Adjusting batch size from {batch_size} to {suggested_batch_size} based on available VRAM")
+                batch_size = suggested_batch_size
+            else:
+                logger.info(f"Using requested batch size of {batch_size}")
+            
+            logger.info(f"Memory estimate: {mem_per_stream}GB per stream, expecting to use ~{mem_per_stream * batch_size:.1f}GB VRAM")
+        except Exception as e:
+            logger.warning(f"Could not calculate optimal batch size: {e}")
+    
+    if use_batching:
+        logger.info(f"Starting with batch processing (batch size: {batch_size})")
+    else:
+        logger.info(f"Starting with {num_workers} parallel Whisper instances")
+        
     if skip_transcribing:
         logger.info("Transcription phase will be skipped")
     
@@ -458,26 +706,32 @@ def main():
                 if trans_tasks:
                     logger.info(f"Found {len(trans_tasks)} files to transcribe")
                     
-                    # Use the number of workers from command line arguments
-                    num_parallel_transcriptions = num_workers
-
-                    # Each process in the pool will call transcribe_file, 
-                    # which in turn calls initialize_whisper().
-                    # Due to the 'spawn' start method, each process will load its own model instance.
-                    with tqdm(total=len(trans_tasks), desc=f"Overall Transcription Progress ({num_parallel_transcriptions} workers)", position=0, leave=True) as pbar:
-                        # Using imap_unordered to update the progress bar as tasks complete
-                        # and to allow tasks to be processed as they are available.
-                        with Pool(processes=num_parallel_transcriptions) as pool:
-                            for _ in pool.imap_unordered(transcribe_file, trans_tasks):
-                                pbar.update(1)
-                    
-                    # This cleanup_whisper() call primarily affects the main process.
-                    # Models loaded by worker processes are cleaned up when those processes terminate.
-                    # It also calls torch.cuda.empty_cache(), which can be beneficial.
-                    cleanup_whisper()
+                    if use_batching:
+                        # Batch processing approach - single model instance processes multiple files
+                        with tqdm(total=len(trans_tasks), desc=f"Overall Transcription Progress (batch size: {batch_size})", position=0, leave=True) as pbar:
+                            # Process all files in appropriate batches
+                            for i in range(0, len(trans_tasks), batch_size*2):  # Process in larger chunks to avoid frequent model reloading
+                                large_batch = trans_tasks[i:i+batch_size*2]
+                                results = transcribe_batch(large_batch, batch_size=batch_size)
+                                pbar.update(len(large_batch))
+                                
+                                # Clear CUDA cache between large batches
+                                if torch.cuda.is_available():
+                                    torch.cuda.empty_cache()
+                        
+                        # Clean up resources after all batches
+                        cleanup_whisper()
+                    else:
+                        # Original approach - multiple worker processes, each with its own model instance
+                        with tqdm(total=len(trans_tasks), desc=f"Overall Transcription Progress ({num_workers} workers)", position=0, leave=True) as pbar:
+                            with Pool(processes=num_workers) as pool:
+                                for _ in pool.imap_unordered(transcribe_file, trans_tasks):
+                                    pbar.update(1)
+                        
+                        # Clean up resources
+                        cleanup_whisper()
                 else:
                     logger.info("No new audio files to transcribe")
-                    # Ensure Whisper resources in the main process are cleaned up if they were ever loaded.
                     cleanup_whisper()
             else:
                 logger.info("Skipping transcription phase as requested")
