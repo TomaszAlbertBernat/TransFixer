@@ -11,9 +11,17 @@ import sys
 from datetime import datetime
 import torch
 from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
-from config import OLLAMA_MODEL, CORRECTION_PROMPT, OLLAMA_API_URL, OLLAMA_OPTIONS
+from config import OLLAMA_MODEL, CORRECTION_PROMPT, OLLAMA_API_URL, OLLAMA_OPTIONS, NUM_PARALLEL_WHISPER
 from tqdm import tqdm
 import re
+import argparse
+
+def parse_arguments():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(description='TransFixer - Audio Transcription and Correction System')
+    parser.add_argument('--workers', type=int, default=NUM_PARALLEL_WHISPER,
+                      help=f'Number of parallel Whisper instances (default: {NUM_PARALLEL_WHISPER})')
+    return parser.parse_args()
 
 # --- START: Configuration ---
 # Original Configuration variables
@@ -411,6 +419,11 @@ def collect_correction_tasks():
 
 def main():
     """Main loop to process audio files in phases."""
+    # Parse command line arguments
+    args = parse_arguments()
+    num_workers = args.workers
+    
+    logger.info(f"Starting with {num_workers} parallel Whisper instances")
     logger.info("Initializing directories...")
     ensure_dir(AUDIO_DIR)
     ensure_dir(TRANSCRIPTIONS_DIR)
@@ -438,7 +451,8 @@ def main():
             if trans_tasks:
                 logger.info(f"Found {len(trans_tasks)} files to transcribe")
                 
-                num_parallel_transcriptions = 2 # Set to 2 for two Whisper instances
+                # Use the number of workers from command line arguments
+                num_parallel_transcriptions = num_workers
 
                 # Each process in the pool will call transcribe_file, 
                 # which in turn calls initialize_whisper().
