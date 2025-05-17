@@ -21,6 +21,8 @@ def parse_arguments():
     parser = argparse.ArgumentParser(description='TransFixer - Audio Transcription and Correction System')
     parser.add_argument('--workers', type=int, default=NUM_PARALLEL_WHISPER,
                       help=f'Number of parallel Whisper instances (default: {NUM_PARALLEL_WHISPER})')
+    parser.add_argument('--skip-transcribing', action='store_true',
+                      help='Skip the transcription phase and proceed directly to correction')
     return parser.parse_args()
 
 # --- START: Configuration ---
@@ -422,8 +424,12 @@ def main():
     # Parse command line arguments
     args = parse_arguments()
     num_workers = args.workers
+    skip_transcribing = args.skip_transcribing
     
     logger.info(f"Starting with {num_workers} parallel Whisper instances")
+    if skip_transcribing:
+        logger.info("Transcription phase will be skipped")
+    
     logger.info("Initializing directories...")
     ensure_dir(AUDIO_DIR)
     ensure_dir(TRANSCRIPTIONS_DIR)
@@ -445,33 +451,36 @@ def main():
             create_backup()
             cleanup_old_backups()
             
-            # Phase 1: Transcribe audio files
-            logger.info("-" * 10 + " Phase 1: Transcription " + "-" * 10)
-            trans_tasks = collect_transcription_tasks()
-            if trans_tasks:
-                logger.info(f"Found {len(trans_tasks)} files to transcribe")
-                
-                # Use the number of workers from command line arguments
-                num_parallel_transcriptions = num_workers
+            # Phase 1: Transcribe audio files (skip if --skip-transcribing is used)
+            if not skip_transcribing:
+                logger.info("-" * 10 + " Phase 1: Transcription " + "-" * 10)
+                trans_tasks = collect_transcription_tasks()
+                if trans_tasks:
+                    logger.info(f"Found {len(trans_tasks)} files to transcribe")
+                    
+                    # Use the number of workers from command line arguments
+                    num_parallel_transcriptions = num_workers
 
-                # Each process in the pool will call transcribe_file, 
-                # which in turn calls initialize_whisper().
-                # Due to the 'spawn' start method, each process will load its own model instance.
-                with tqdm(total=len(trans_tasks), desc=f"Overall Transcription Progress ({num_parallel_transcriptions} workers)", position=0, leave=True) as pbar:
-                    # Using imap_unordered to update the progress bar as tasks complete
-                    # and to allow tasks to be processed as they are available.
-                    with Pool(processes=num_parallel_transcriptions) as pool:
-                        for _ in pool.imap_unordered(transcribe_file, trans_tasks):
-                            pbar.update(1)
-                
-                # This cleanup_whisper() call primarily affects the main process.
-                # Models loaded by worker processes are cleaned up when those processes terminate.
-                # It also calls torch.cuda.empty_cache(), which can be beneficial.
-                cleanup_whisper()
+                    # Each process in the pool will call transcribe_file, 
+                    # which in turn calls initialize_whisper().
+                    # Due to the 'spawn' start method, each process will load its own model instance.
+                    with tqdm(total=len(trans_tasks), desc=f"Overall Transcription Progress ({num_parallel_transcriptions} workers)", position=0, leave=True) as pbar:
+                        # Using imap_unordered to update the progress bar as tasks complete
+                        # and to allow tasks to be processed as they are available.
+                        with Pool(processes=num_parallel_transcriptions) as pool:
+                            for _ in pool.imap_unordered(transcribe_file, trans_tasks):
+                                pbar.update(1)
+                    
+                    # This cleanup_whisper() call primarily affects the main process.
+                    # Models loaded by worker processes are cleaned up when those processes terminate.
+                    # It also calls torch.cuda.empty_cache(), which can be beneficial.
+                    cleanup_whisper()
+                else:
+                    logger.info("No new audio files to transcribe")
+                    # Ensure Whisper resources in the main process are cleaned up if they were ever loaded.
+                    cleanup_whisper()
             else:
-                logger.info("No new audio files to transcribe")
-                # Ensure Whisper resources in the main process are cleaned up if they were ever loaded.
-                cleanup_whisper()
+                logger.info("Skipping transcription phase as requested")
             
             # Phase 2: Correct transcriptions
             logger.info("-" * 10 + " Phase 2: Correction " + "-" * 10)
