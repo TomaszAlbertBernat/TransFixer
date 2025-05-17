@@ -437,16 +437,26 @@ def main():
             trans_tasks = collect_transcription_tasks()
             if trans_tasks:
                 logger.info(f"Found {len(trans_tasks)} files to transcribe")
-                # Create a progress bar for overall transcription progress
-                with tqdm(total=len(trans_tasks), desc="Overall Progress", position=0) as pbar:
-                    for task in trans_tasks:
-                        transcribe_file(task)
-                        pbar.update(1)
-                # Clean up Whisper resources after transcription is done
+                
+                num_parallel_transcriptions = 2 # Set to 2 for two Whisper instances
+
+                # Each process in the pool will call transcribe_file, 
+                # which in turn calls initialize_whisper().
+                # Due to the 'spawn' start method, each process will load its own model instance.
+                with tqdm(total=len(trans_tasks), desc=f"Overall Transcription Progress ({num_parallel_transcriptions} workers)", position=0, leave=True) as pbar:
+                    # Using imap_unordered to update the progress bar as tasks complete
+                    # and to allow tasks to be processed as they are available.
+                    with Pool(processes=num_parallel_transcriptions) as pool:
+                        for _ in pool.imap_unordered(transcribe_file, trans_tasks):
+                            pbar.update(1)
+                
+                # This cleanup_whisper() call primarily affects the main process.
+                # Models loaded by worker processes are cleaned up when those processes terminate.
+                # It also calls torch.cuda.empty_cache(), which can be beneficial.
                 cleanup_whisper()
             else:
                 logger.info("No new audio files to transcribe")
-                # Ensure Whisper is not loaded if not needed
+                # Ensure Whisper resources in the main process are cleaned up if they were ever loaded.
                 cleanup_whisper()
             
             # Phase 2: Correct transcriptions
