@@ -52,7 +52,7 @@ def cleanup_worker():
         except Exception as e:
             logger.error(f"Worker {worker_id}: Error during final GPU cleanup: {e}")
 
-def init_worker(model_name, use_torch_compile, generate_kwargs):
+def init_worker(model_name, use_torch_compile, generate_kwargs, batch_size=1):
     """
     Initialize the worker process with a persistent WhisperTranscriber instance.
     This function is called once per worker when the Pool is created.
@@ -61,6 +61,7 @@ def init_worker(model_name, use_torch_compile, generate_kwargs):
         model_name: Name of the Whisper model to use
         use_torch_compile: Whether to use torch.compile
         generate_kwargs: Additional kwargs for generation
+        batch_size: Number of audio files to process in a batch
     """
     global _worker_transcriber
     
@@ -72,7 +73,7 @@ def init_worker(model_name, use_torch_compile, generate_kwargs):
     
     # Log worker initialization
     worker_id = os.getpid()
-    logger.info(f"Initializing worker process {worker_id} with persistent transcriber")
+    logger.info(f"Initializing worker process {worker_id} with persistent transcriber (batch_size: {batch_size})")
     
     # Register cleanup function to run on process exit
     import atexit
@@ -96,9 +97,10 @@ def init_worker(model_name, use_torch_compile, generate_kwargs):
         _worker_transcriber = WhisperTranscriber(
             model_name=model_name,
             use_torch_compile=use_torch_compile,
-            generate_kwargs=generate_kwargs
+            generate_kwargs=generate_kwargs,
+            batch_size=batch_size
         )
-        logger.info(f"Worker {worker_id} successfully initialized transcriber")
+        logger.info(f"Worker {worker_id} successfully initialized transcriber with batch_size={batch_size}")
     except Exception as e:
         logger.error(f"Worker {worker_id} failed to initialize transcriber: {e}", exc_info=True)
         _worker_transcriber = None
@@ -246,6 +248,8 @@ def parse_arguments():
                       help='Use batched processing instead of multiple workers (more memory efficient)')
     parser.add_argument('--use-torch-compile', action='store_true',
                       help='Enable torch.compile for Whisper model (requires PyTorch 2.0+).')
+    parser.add_argument('--hybrid-mode', action='store_true',
+                      help='Use both multi-worker and batching modes together (each worker processes batches)')
     return parser.parse_args()
 
 # --- START: Configuration ---
@@ -596,8 +600,72 @@ def handle_transcription_phase(args, path_manager: PathManager, task_manager: Ta
 
     logger.info(f"Processing {len(tasks_to_process_this_run)} files for transcription this run.")
     
-    if args.use_batching:
-        # Handle batch mode transcription with dynamic batch sizing
+    if args.hybrid_mode:
+        # Hybrid mode: Multiple workers, each processing batches
+        logger.info("Using hybrid mode (multi-worker + batching)")
+        
+        # Calculate optimal workers and batch size
+        optimal_workers = calculate_optimal_workers(args, min_workers=1)
+        optimal_batch_size = calculate_optimal_batch_size(args.batch_size, min_batch_size=1)
+        
+        logger.info(f"Using {optimal_workers} workers with batch size {optimal_batch_size}")
+        
+        # Split tasks into batches
+        all_batches = []
+        for i in range(0, len(tasks_to_process_this_run), optimal_batch_size):
+            batch = tasks_to_process_this_run[i:i+optimal_batch_size]
+            all_batches.append(batch)
+        
+        logger.info(f"Split {len(tasks_to_process_this_run)} tasks into {len(all_batches)} batches")
+        
+        # Create pool with worker initialization
+        pool = None
+        try:
+            with tqdm(total=len(tasks_to_process_this_run), desc=f"Hybrid Transcription ({optimal_workers} workers, batch size {optimal_batch_size})", position=0, leave=True) as pbar_overall:
+                # Create pool with worker initialization
+                pool = Pool(
+                    processes=optimal_workers, 
+                    initializer=init_worker, 
+                    initargs=(WHISPER_MODEL, args.use_torch_compile, None, optimal_batch_size),
+                    maxtasksperchild=None  # Keep workers alive with their initialized transcriber
+                )
+                
+                # Process the batches
+                batch_args = [(batch, WHISPER_MODEL, args.use_torch_compile, optimal_batch_size, task_manager) for batch in all_batches]
+                
+                # Process batches and update progress bar
+                for _ in pool.imap_unordered(transcribe_batch_pooled, batch_args):
+                    pbar_overall.update(optimal_batch_size)  # This is approximate since batches may not be full
+            
+            # Gracefully close the pool and wait for workers to finish
+            logger.info("All transcription tasks completed, closing worker pool...")
+            if pool:
+                pool.close()
+                pool.join()
+            logger.info("Worker pool closed successfully")
+                
+        except Exception as e:
+            logger.error(f"Error during hybrid pool processing: {e}", exc_info=True)
+            # Ensure pool is terminated even if an exception occurs
+            if pool:
+                logger.warning("Terminating pool due to error")
+                pool.terminate()
+                pool.join()
+        finally:
+            # Clean up regardless of how we exit
+            if pool:
+                logger.info("Ensuring pool is closed and joined")
+                try:
+                    pool.close()
+                    pool.join()
+                except Exception as pool_cleanup_error:
+                    logger.error(f"Error during pool cleanup: {pool_cleanup_error}")
+            
+            # Always clear GPU memory after all workers are done
+            clear_gpu_memory()
+    elif args.use_batching:
+        # Original batching mode code
+        # ... existing code for batching mode ...
         
         # Calculate optimal batch size based on available memory
         optimal_batch_size = calculate_optimal_batch_size(args.batch_size, min_batch_size=1)
@@ -705,6 +773,9 @@ def handle_transcription_phase(args, path_manager: PathManager, task_manager: Ta
             task_manager.release_lock(audio_path_processed, lock_type="transcription")
 
     else:
+        # Original multi-worker mode code
+        # ... existing code for multi-worker mode ...
+        
         # Handle parallel processing mode with dynamic worker count based on available resources
         optimal_workers = calculate_optimal_workers(args)
         logger.info(f"Using multiprocessing pool with {optimal_workers} workers for transcription (optimized from requested {args.workers}).")
@@ -727,7 +798,7 @@ def handle_transcription_phase(args, path_manager: PathManager, task_manager: Ta
                     pool = Pool(
                         processes=optimal_workers, 
                         initializer=init_worker, 
-                        initargs=(WHISPER_MODEL, args.use_torch_compile, None),
+                        initargs=(WHISPER_MODEL, args.use_torch_compile, None, 1),  # Use batch_size=1 for non-batching mode
                         # Set maxtasksperchild=None to keep workers alive with their initialized transcriber
                         maxtasksperchild=None
                     )
@@ -796,12 +867,150 @@ def handle_correction_phase(task_manager: TaskManager, ollama_corrector_instance
     else:
         logger.warning("OllamaCorrector instance not available. Correction tasks will be problematic.")
 
+def transcribe_batch_pooled(args_tuple):
+    """
+    Transcribes a batch of audio files using a worker process.
+    Uses the persistent transcriber initialized in the worker process.
+    
+    Args:
+        args_tuple: Tuple containing (batch_tasks, model_name, use_torch_compile, batch_size, task_manager)
+            batch_tasks: List of task dictionaries with audio_path and trans_path
+            model_name: Name of the Whisper model
+            use_torch_compile: Whether to use torch.compile
+            batch_size: Number of audio files to process in a batch
+            task_manager: TaskManager instance
+    """
+    global _worker_transcriber
+    
+    # Unpack arguments
+    batch_tasks, model_name, use_torch_compile, batch_size, task_manager = args_tuple
+    worker_id = os.getpid()
+    
+    if not task_manager:
+        logger.error(f"Worker {worker_id}: TaskManager instance not provided for batch processing. Skipping.")
+        return
+    
+    if len(batch_tasks) == 0:
+        logger.warning(f"Worker {worker_id}: Empty batch received. Skipping.")
+        return
+    
+    logger.info(f"Worker {worker_id}: Processing batch of {len(batch_tasks)} files")
+    
+    # Acquire locks for all files in the batch
+    locked_tasks = []
+    for task in batch_tasks:
+        audio_path = task['audio_path']
+        if task_manager.is_locked(audio_path, lock_type="transcription") or \
+           task_manager.is_locked(audio_path, lock_type="process"):
+            logger.info(f"Worker {worker_id}: Skipping {audio_path} - file is locked.")
+            continue
+        
+        if os.path.exists(task['trans_path']):
+            # Already processed
+            continue
+            
+        if task_manager.acquire_lock(audio_path, lock_type="transcription"):
+            locked_tasks.append(task)
+        else:
+            logger.error(f"Worker {worker_id}: Could not acquire transcription lock for {audio_path}. Skipping.")
+    
+    if not locked_tasks:
+        logger.info(f"Worker {worker_id}: No files could be locked in this batch. Skipping.")
+        return
+    
+    try:
+        # Prepare batch
+        audio_paths = [task['audio_path'] for task in locked_tasks]
+        trans_paths = [task['trans_path'] for task in locked_tasks]
+        
+        logger.info(f"Worker {worker_id}: Starting batch transcription for {len(locked_tasks)} files")
+        
+        # Check if we have a valid transcriber
+        if _worker_transcriber is None:
+            logger.warning(f"Worker {worker_id}: No persistent transcriber available, initializing one-time transcriber")
+            # Fall back to creating a temporary transcriber
+            with WhisperTranscriber(
+                model_name=model_name, 
+                use_torch_compile=use_torch_compile,
+                batch_size=batch_size
+            ) as temp_transcriber:
+                results = temp_transcriber.transcribe_batch(audio_paths)
+        else:
+            # Use the persistent transcriber
+            logger.info(f"Worker {worker_id}: Using persistent transcriber for batch processing")
+            results = _worker_transcriber.transcribe_batch(audio_paths)
+        
+        # Process results
+        for task, result in zip(locked_tasks, results):
+            audio_path = task['audio_path']
+            trans_path = task['trans_path']
+            transcription = result.get("transcription")
+            error = result.get("error")
+            
+            if error:
+                logger.error(f"Worker {worker_id}: Transcription failed for {audio_path}: {error}")
+                continue
+                
+            if transcription is not None:
+                ensure_dir(os.path.dirname(trans_path))
+                with open(trans_path, "w", encoding="utf-8") as f:
+                    f.write(transcription)
+                
+                if len(transcription.strip()) >= task_manager.min_chars:
+                    logger.info(f"Worker {worker_id}: Successfully transcribed {audio_path}")
+                else:
+                    logger.warning(f"Worker {worker_id}: Transcription too short for {audio_path} (length {len(transcription.strip())})")
+            else:
+                logger.error(f"Worker {worker_id}: Transcription failed for {audio_path}: No transcription returned")
+                
+    except Exception as e:
+        logger.error(f"Worker {worker_id}: Unexpected error during batch transcription: {e}", exc_info=True)
+    finally:
+        # Clean up memory if needed
+        if torch.cuda.is_available():
+            # Only do a light cleanup here since we're keeping the transcriber loaded
+            try:
+                allocated_gb = torch.cuda.memory_allocated() / (1024**3)
+                logger.info(f"Worker {worker_id}: GPU memory after batch transcription: {allocated_gb:.2f}GB allocated")
+                
+                # Only clear cache if memory usage is very high
+                if allocated_gb > 10.0:  # Arbitrary high threshold
+                    logger.warning(f"Worker {worker_id}: High GPU memory usage detected, clearing cache")
+                    torch.cuda.empty_cache()
+            except Exception as e:
+                logger.warning(f"Worker {worker_id}: Error checking GPU memory: {e}")
+        
+        # Release all locks
+        for task in locked_tasks:
+            task_manager.release_lock(task['audio_path'], lock_type="transcription")
+        
+        logger.info(f"Worker {worker_id}: Batch processing completed for {len(locked_tasks)} files")
+
 def main():
     """Main loop to process audio files in phases."""
     args = parse_arguments()
     
+    # Validate command line arguments for mode conflicts
+    if args.hybrid_mode and args.use_batching:
+        logger.warning("Both --hybrid-mode and --use-batching are specified. Hybrid mode will take precedence.")
+        args.use_batching = False
+    
+    # Log selected processing mode
+    if args.hybrid_mode:
+        logger.info("Using hybrid mode (multi-worker + batching)")
+    elif args.use_batching:
+        logger.info("Using batch mode with dynamic batch sizing (max batch size: %d)", args.batch_size)
+    else:
+        logger.info("Using parallel processing mode with dynamic worker allocation (max workers: %d)", args.workers)
+    
     # Log memory management strategy based on args
-    if args.use_batching:
+    if args.hybrid_mode:
+        logger.info(f"Using hybrid mode with dynamic worker count and batch sizing (max batch size: {args.batch_size}, max workers: {args.workers})")
+        if torch.cuda.is_available():
+            logger.info(f"GPU is available: memory-optimized worker count and batch sizing will be used")
+        else:
+            logger.info(f"GPU is not available: worker count and batch sizing will be based on system memory only")
+    elif args.use_batching:
         logger.info(f"Using batch mode with dynamic batch sizing (max batch size: {args.batch_size})")
         if torch.cuda.is_available():
             logger.info(f"GPU is available: memory-optimized batch sizing will be used")
