@@ -14,7 +14,7 @@ LOG_FILE = os.path.join(LOG_DIR, "transcription_errors.log")
 MIN_CHARS = 50  # Minimum characters for a valid transcription
 MAX_RETRIES = 3 # Max retries for Whisper transcription attempts
 CHECK_INTERVAL = 300  # Seconds between processing cycles
-NUM_PARALLEL_WHISPER = 2  # Number of parallel Whisper instances to run
+NUM_PARALLEL_WHISPER = 4  # Number of parallel Whisper instances to run (increased from 2 to better utilize available VRAM)
 
 # --- Whisper Model Configuration ---
 # Options for Hugging Face: "openai/whisper-tiny", "openai/whisper-base", "openai/whisper-small",

@@ -160,7 +160,7 @@ def calculate_optimal_workers(args, min_workers=1):
     
     # Estimate memory required per worker (GB)
     # Whisper large model is ~3GB in FP16
-    estimated_memory_per_worker = 4.0  # Conservative estimate
+    estimated_memory_per_worker = 2.0  # Less conservative estimate (reduced from 4.0)
     
     # Calculate maximum workers based on GPU memory
     total_free_memory = sum(info['free'] for info in gpu_info.values())
@@ -203,7 +203,7 @@ def calculate_optimal_batch_size(requested_batch_size, min_batch_size=1):
                 
                 # Estimate memory needed per audio sample in batch (GB)
                 # This is approximate and will vary with audio length
-                estimated_memory_per_sample = 0.5  # Conservative estimate: ~500MB per sample
+                estimated_memory_per_sample = 0.25  # Less conservative estimate (reduced from 0.5)
                 
                 # Calculate max batch size based on GPU memory, leaving 20% headroom
                 max_by_gpu = max(min_batch_size, int((total_free_gpu_memory * 0.8) / estimated_memory_per_sample))
