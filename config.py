@@ -25,65 +25,89 @@ WHISPER_MODEL = "openai/whisper-large-v3-turbo" # Changed to a standard Hugging 
 # --- Ollama Configuration ---
 # Ensure your Ollama instance is running and the model is pulled (e.g., `ollama pull phi3:mini`)
 OLLAMA_API_URL = "http://localhost:11434/api/chat"  # Default Ollama API endpoint for chat
-OLLAMA_MODEL = "qwen3:8b"  # Example: "llama3", "phi3", "mistral". Ensure this model is pulled in Ollama.
-OLLAMA_OPTIONS = {  # Options to pass to the Ollama model
-    "temperature": 0.7,
-    "num_ctx": 9000,  # Example context window size, adjust based on model
-    # Add other Ollama options here as needed: e.g., top_k, top_p
+OLLAMA_MODEL = "llama3.2:3b"  # Change this to your preferred model
+OLLAMA_OPTIONS = {
+    "temperature": 0.1,
+    "top_k": 40,
+    "top_p": 0.9,
+    "repeat_penalty": 1.1,
+    "max_tokens": 1024
 }
 
 # --- Backup Configuration ---
 MAX_BACKUPS = 1  # Maximum number of backups to keep
 
 # --- Prompt Template for Correction ---
-CORRECTION_PROMPT = (
-    "**Task:**\n"
-    "> You are a sophisticated information extraction assistant. Your role is to analyze a provided transcription of a\n"
-    "> conversation, identify key topics, extract structured information, and organize it into a standardized format for\n"
-    "> use in Retrieval-Augmented Generation (RAG) systems.\n\n"
-    "> **Instructions:**\n"
-    "> 1. **Read the transcription carefully** and identify all explicitly discussed topics (e.g., projects, events,\n"
-    "> decisions, conflicts, etc.).\n"
-    "> 2. **Extract structured data** for each topic, including:\n"
-    ">    - **Topic Name** (e.g., \"Project Launch\", \"Budget Review\")\n"
-    ">    - **Key Points** (e.g., objectives, timelines, stakeholders, decisions made)\n"
-    ">    - **Participants** (names/roles of individuals involved)\n"
-    ">    - **Dates/Time** (if mentioned)\n"
-    ">    - **Action Items** (tasks assigned or agreed upon)\n"
-    ">    - **Contextual Notes** (additional details or nuances)\n"
-    "> 3. **Organize the output** into a JSON or structured format, ensuring clarity and precision.\n"
-    "> 4. **Avoid adding unverified information** or assumptions not explicitly stated in the transcription.\n"
-    "> 5. **Highlight critical decisions or unresolved issues** if applicable.\n"
-    "> 6. **Include metadata** such as the transcription source, date, and speaker roles (if available).\n\n"
-    "> **Example Output Format:**\n"
-    "> ```json\n"
-    "> {\n"
-    ">   \"transcription_metadata\": {\n"
-    ">     \"source\": \"Meeting Transcript - Q3 Strategy Session\",\n"
-    ">     \"date\": \"2023-10-15\",\n"
-    ">     \"participants\": [\"Alice (Project Lead)\", \"Bob (CTO)\", \"Charlie (Marketing Head)\"]\n"
-    ">   },\n"
-    ">   \"topics\": [\n"
-    ">     {\n"
-    ">       \"topic_name\": \"Project Launch\",\n"
-    ">       \"key_points\": [\n"
-    ">         \"Launch date set for Q4 2023\",\n"
-    ">         \"Budget allocation: $500k for development\",\n"
-    ">         \"Stakeholders: Alice, Bob, Charlie\"\n"
-    ">       ],\n"
-    ">       \"action_items\": [\n"
-    ">         \"Finalize vendor contracts by 2023-10-20\",\n"
-    ">         \"Prepare marketing materials by 2023-10-25\"\n"
-    ">       ],\n"
-    ">       \"contextual_notes\": \"Discussed potential risks related to vendor delays.\"\n"
-    ">     }\n"
-    ">   ]\n"
-    "> }\n"
-    "> ```\n\n"
-    "> **Notes for the Model:**\n"
-    "> - Prioritize accuracy over completeness. If information is ambiguous, flag it as \"unclear\" or \"not specified.\"\n"
-    "> - Use consistent terminology (e.g., \"action items\" vs. \"tasks\")\n"
-    "> - If the transcription contains multiple languages, extract information in the original language unless\n"
-    "> instructed otherwise\n"
-    "> - For RAG integration, ensure the structured data is searchable and semantically rich"
-)
+CORRECTION_PROMPT = """Please correct the following transcription text for any spelling mistakes, grammatical errors, punctuation issues, or transcription artifacts. 
+Maintain the original meaning and flow of the text. Return only the corrected text without additional commentary or explanation."""
+
+# =============================================================================
+# GPU OPTIMIZATION SETTINGS
+# =============================================================================
+
+# Performance Mode Selection
+PERFORMANCE_MODE = "aggressive"  # Options: "conservative", "balanced", "aggressive"
+
+# Performance Mode Configurations
+PERFORMANCE_CONFIGS = {
+    "conservative": {
+        "gpu_memory_fraction": 0.7,
+        "memory_safety_factor": 0.7,  # Use 70% of available memory
+        "max_batch_size": 12,
+        "max_chunk_length": 45,
+        "aggressive_batching": False,
+    },
+    "balanced": {
+        "gpu_memory_fraction": 0.8,
+        "memory_safety_factor": 0.8,  # Use 80% of available memory
+        "max_batch_size": 16,
+        "max_chunk_length": 60,
+        "aggressive_batching": True,
+    },
+    "aggressive": {
+        "gpu_memory_fraction": 0.9,
+        "memory_safety_factor": 0.9,  # Use 90% of available memory
+        "max_batch_size": 24,
+        "max_chunk_length": 90,
+        "aggressive_batching": True,
+    }
+}
+
+# Get current performance config
+_current_config = PERFORMANCE_CONFIGS[PERFORMANCE_MODE]
+
+# Apply current settings
+GPU_MEMORY_FRACTION = _current_config["gpu_memory_fraction"]
+MEMORY_SAFETY_FACTOR = _current_config["memory_safety_factor"]
+MAX_BATCH_SIZE = _current_config["max_batch_size"]
+AGGRESSIVE_BATCHING = _current_config["aggressive_batching"]
+
+# Legacy settings (kept for compatibility)
+CONSERVATIVE_BATCH_SIZING = not AGGRESSIVE_BATCHING  # Inverse of aggressive batching
+ENABLE_MIXED_PRECISION = True  # Enable automatic mixed precision for faster inference
+SMART_GPU_SELECTION = True  # Automatically select GPU with most available memory
+
+# Model Settings
+WHISPER_MODEL_CACHE_TIMEOUT = 3600  # Cache model for 1 hour
+MIN_MEMORY_THRESHOLD = 0.85 if PERFORMANCE_MODE == "aggressive" else 0.8  # Higher threshold for aggressive mode
+
+# Performance Settings - Dynamic based on performance mode
+DEFAULT_CHUNK_LENGTH = min(50 if PERFORMANCE_MODE == "aggressive" else 30, _current_config["max_chunk_length"])
+MIN_CHUNK_LENGTH = 20
+MAX_CHUNK_LENGTH = _current_config["max_chunk_length"]
+
+# =============================================================================
+# PERFORMANCE MODE SUMMARY
+# =============================================================================
+def get_performance_summary():
+    """Get a summary of current performance settings."""
+    return {
+        "mode": PERFORMANCE_MODE,
+        "gpu_memory_fraction": f"{GPU_MEMORY_FRACTION*100:.0f}%",
+        "memory_safety_factor": f"{MEMORY_SAFETY_FACTOR*100:.0f}%",
+        "max_batch_size": MAX_BATCH_SIZE,
+        "chunk_length_range": f"{MIN_CHUNK_LENGTH}-{MAX_CHUNK_LENGTH}s",
+        "default_chunk_length": f"{DEFAULT_CHUNK_LENGTH}s",
+        "aggressive_batching": AGGRESSIVE_BATCHING,
+        "mixed_precision": ENABLE_MIXED_PRECISION
+    }
