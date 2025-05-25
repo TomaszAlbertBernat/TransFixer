@@ -148,6 +148,9 @@ model_cache = {
 # Global flag to track if performance analysis has been done
 performance_analysis_done = False
 
+# Global flag for performance analysis (set by command line argument)
+analyze_performance = False
+
 MODEL_CACHE_TIMEOUT = 3600  # 60 minutes
 MIN_MEMORY_THRESHOLD = 0.8  # 80% memory usage threshold
 
@@ -1231,7 +1234,10 @@ def preload_and_optimize_model():
         logger.error(f"Error during model preloading and optimization: {e}")
         return False
 
-def main(num_workers_arg, batch_size_arg, analyze_performance=False):
+def main(num_workers_arg, batch_size_arg, analyze_performance_arg=False):
+    global analyze_performance
+    analyze_performance = analyze_performance_arg
+    
     logger.info("Initializing directories...")
     ensure_dir(AUDIO_DIR)
     ensure_dir(TRANSCRIPTIONS_DIR)
