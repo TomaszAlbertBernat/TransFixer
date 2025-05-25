@@ -118,8 +118,8 @@ PERFORMANCE_CONFIGS = {
     "aggressive": {
         "gpu_memory_fraction": 0.9,
         "memory_safety_factor": 0.9,  # Use 90% of available memory
-        "max_batch_size": 24,
-        "max_chunk_length": 90,
+        "max_batch_size": 16,
+        "max_chunk_length": 30,
         "aggressive_batching": True,
     }
 }

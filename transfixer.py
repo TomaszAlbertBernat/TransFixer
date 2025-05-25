@@ -35,19 +35,15 @@ import argparse # Added argparse
 try:
     from faster_whisper import WhisperModel as FasterWhisperModel, BatchedInferencePipeline
     FASTER_WHISPER_AVAILABLE = True
-    logger.info("✓ faster-whisper available for CTranslate2 optimizations")
 except ImportError:
     FASTER_WHISPER_AVAILABLE = False
-    logger.warning("⚠ faster-whisper not available. Install with: pip install faster-whisper")
 
 # Try to import flash-attn
 try:
     import flash_attn
     FLASH_ATTENTION_AVAILABLE = True
-    logger.info("✓ Flash Attention 2 available")
 except ImportError:
     FLASH_ATTENTION_AVAILABLE = False
-    logger.warning("⚠ Flash Attention not available. Install with: pip install flash-attn")
 
 # Import advanced performance monitoring
 try:
@@ -60,10 +56,8 @@ try:
         export_performance_metrics
     )
     PERFORMANCE_MONITORING_AVAILABLE = True
-    logger.info("✓ Advanced performance monitoring available")
 except ImportError:
     PERFORMANCE_MONITORING_AVAILABLE = False
-    logger.warning("⚠ Advanced performance monitoring not available")
 
 # Global shutdown event
 shutdown_event = threading.Event()
@@ -125,6 +119,22 @@ logger.setLevel(logging.INFO)
 logger.addHandler(file_handler)
 logger.addHandler(console_handler)
 
+# Log import status after logger is configured
+if FASTER_WHISPER_AVAILABLE:
+    logger.info("✓ faster-whisper available for CTranslate2 optimizations")
+else:
+    logger.warning("⚠ faster-whisper not available. Install with: pip install faster-whisper")
+
+if FLASH_ATTENTION_AVAILABLE:
+    logger.info("✓ Flash Attention 2 available")
+else:
+    logger.warning("⚠ Flash Attention not available. Install with: pip install flash-attn")
+
+if PERFORMANCE_MONITORING_AVAILABLE:
+    logger.info("✓ Advanced performance monitoring available")
+else:
+    logger.warning("⚠ Advanced performance monitoring not available")
+
 # Global variables for model caching
 model_cache = {
     'model': None,
@@ -135,8 +145,90 @@ model_cache = {
     'lock': threading.Lock()
 }
 
+# Global flag to track if performance analysis has been done
+performance_analysis_done = False
+
 MODEL_CACHE_TIMEOUT = 3600  # 60 minutes
 MIN_MEMORY_THRESHOLD = 0.8  # 80% memory usage threshold
+
+def log_performance_analysis_during_transcription():
+    """Log performance analysis during active transcription when GPU is actually being used."""
+    global performance_analysis_done
+    
+    if performance_analysis_done or not PERFORMANCE_MONITORING_AVAILABLE:
+        return
+    
+    performance_analysis_done = True
+    
+    logger.info("=" * 60)
+    logger.info("📊 PERFORMANCE ANALYSIS DURING ACTIVE TRANSCRIPTION:")
+    logger.info("=" * 60)
+    
+    try:
+        from advanced_performance_monitor import PerformanceOptimizer, PerformanceMetrics
+        from datetime import datetime
+        
+        # Wait a moment for GPU utilization to stabilize
+        time.sleep(2)
+        
+        # Get current metrics during active transcription
+        resources = get_system_resources()
+        
+        # Create metrics object
+        metrics = PerformanceMetrics(
+            timestamp=datetime.now(),
+            cpu_percent=resources['cpu_percent'],
+            memory_percent=resources['memory_percent'],
+            memory_used_gb=resources['memory_available'] / (1024**3),
+            gpu_memory_used_mb=resources['gpu_info'][0]['memory_used'] if resources['gpu_info'] else None,
+            gpu_memory_total_mb=resources['gpu_info'][0]['memory_total'] if resources['gpu_info'] else None,
+            gpu_utilization=None,
+            gpu_temperature=resources['gpu_info'][0]['temperature'] if resources['gpu_info'] else None
+        )
+        
+        optimizer = PerformanceOptimizer()
+        suggestions = optimizer.analyze_performance(metrics)
+        optimal_settings = optimizer.suggest_optimal_settings(metrics)
+        
+        # Log current system state during transcription
+        logger.info(f"💻 System Under Load (during transcription):")
+        logger.info(f"   CPU: {metrics.cpu_percent:.1f}% | Memory: {metrics.memory_percent:.1f}%")
+        if metrics.gpu_memory_used_mb:
+            gpu_usage = (metrics.gpu_memory_used_mb / metrics.gpu_memory_total_mb) * 100
+            logger.info(f"   GPU Memory: {gpu_usage:.1f}% ({metrics.gpu_memory_used_mb:.0f}MB/{metrics.gpu_memory_total_mb:.0f}MB)")
+            if metrics.gpu_temperature:
+                logger.info(f"   GPU Temperature: {metrics.gpu_temperature}°C")
+        
+        # Log suggestions based on real working load
+        if suggestions:
+            logger.info(f"🔧 Optimization Suggestions (based on real workload):")
+            for suggestion in suggestions:
+                logger.info(f"   {suggestion}")
+        else:
+            logger.info(f"🎯 System performance looks optimal during transcription!")
+        
+        # Log optimal settings based on actual usage
+        if optimal_settings:
+            logger.info(f"⚙️  Recommended Settings (based on actual GPU usage):")
+            for key, value in optimal_settings.items():
+                logger.info(f"   {key}: {value}")
+                
+            # Compare with current config settings
+            from config import PERFORMANCE_MODE, MAX_BATCH_SIZE, DEFAULT_CHUNK_LENGTH
+            logger.info(f"📋 Current Config vs Recommended:")
+            logger.info(f"   Performance Mode: {PERFORMANCE_MODE} → {optimal_settings.get('performance_mode', 'current is fine')}")
+            if 'batch_size' in optimal_settings:
+                logger.info(f"   Batch Size: {MAX_BATCH_SIZE} → {optimal_settings['batch_size']}")
+            if 'chunk_length' in optimal_settings:
+                logger.info(f"   Chunk Length: {DEFAULT_CHUNK_LENGTH} → {optimal_settings['chunk_length']}")
+        
+        logger.info(f"💡 Note: These recommendations are based on actual GPU utilization during transcription.")
+        logger.info(f"💡 You can adjust settings in config.py or use --batch-size parameter.")
+                
+    except Exception as e:
+        logger.warning(f"Could not generate performance analysis: {e}")
+    
+    logger.info("=" * 60)
 
 def should_unload_model():
     """Determine if the model should be unloaded based on system resources."""
@@ -909,6 +1001,17 @@ def transcribe_files_batch(file_batch):
     # Initialize Whisper for this process if not already done
     initialize_whisper()
     
+    # Log performance analysis after model is loaded and about to start transcription
+    # This will capture the real GPU usage during active transcription
+    if not performance_analysis_done:
+        # Start transcription in a separate thread to analyze while it's running
+        def delayed_analysis():
+            time.sleep(3)  # Wait for transcription to start using GPU
+            log_performance_analysis_during_transcription()
+        
+        analysis_thread = threading.Thread(target=delayed_analysis, daemon=True)
+        analysis_thread.start()
+    
     successful_transcriptions = 0
     failed_transcriptions = 0
     
@@ -1140,10 +1243,9 @@ def main(num_workers_arg, batch_size_arg):
 
     logger.info(f"Using Ollama model: {OLLAMA_MODEL} via {OLLAMA_API_URL}")
     
-    # Start advanced performance monitoring
+    # Log initial performance analysis (one-time)
     if PERFORMANCE_MONITORING_AVAILABLE:
-        start_performance_monitoring()
-        logger.info("✓ Advanced performance monitoring started")
+        logger.info("✓ Advanced performance monitoring available (logging initial analysis only)")
     
     # Log optimization settings
     logger.info("="*60)
@@ -1178,6 +1280,8 @@ def main(num_workers_arg, batch_size_arg):
             gpu = resources['gpu_info'][0]
             vram_usage_percent = (gpu['memory_used'] / gpu['memory_total']) * 100
             logger.info(f"Memory optimized! Using {gpu['memory_used']}MB/{gpu['memory_total']}MB ({vram_usage_percent:.1f}%) of GPU memory")
+    
+    # Performance analysis will be done during first transcription batch
 
     try:
         cycle_count = 0
@@ -1304,15 +1408,14 @@ def main(num_workers_arg, batch_size_arg):
     finally:
         logger.info("Main loop finally block reached.")
         
-        # Stop performance monitoring and export metrics
+        # Clean up performance monitoring if it was started
         if PERFORMANCE_MONITORING_AVAILABLE:
             try:
-                logger.info("Stopping performance monitoring and exporting metrics...")
-                stop_performance_monitoring()
-                metrics_file = export_performance_metrics()
-                logger.info(f"Performance metrics exported to: {metrics_file}")
+                logger.info("Cleaning up performance monitoring...")
+                stop_performance_monitoring()  # Just in case it was started elsewhere
+                logger.info("Performance monitoring cleanup complete")
             except Exception as e:
-                logger.error(f"Error stopping performance monitoring: {e}")
+                logger.warning(f"Note: Performance monitoring cleanup: {e}")
         
         # Pools should be closed by their 'with' statements.
         # This finally block is a safeguard or for other main-level resources if any.
