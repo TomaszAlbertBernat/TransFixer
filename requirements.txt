@@ -71,9 +71,9 @@ sympy==1.14.0
 threadpoolctl==3.6.0
 tiktoken==0.9.0
 tokenizers==0.21.1
-torch==2.7.0
+torch>=2.3.0
 tqdm==4.67.1
-transformers==4.51.3
+transformers>=4.46.0
 triton==3.3.0
 typing_extensions==4.13.2
 tzdata==2025.2
@@ -81,3 +81,8 @@ urllib3==2.4.0
 xxhash==3.5.0
 yarl==1.20.0
 gputil==1.4.0
+
+# Performance optimizations
+flash-attn>=2.0.0  # Flash Attention 2 for memory efficiency
+faster-whisper>=1.1.0  # CTranslate2 backend for 4-8x speed improvement
+ctranslate2>=4.5.0  # High-performance inference engine

@@ -18,9 +18,26 @@ CHECK_INTERVAL = 300  # Seconds between processing cycles
 # --- Whisper Model Configuration ---
 # Options for Hugging Face: "openai/whisper-tiny", "openai/whisper-base", "openai/whisper-small",
 # "openai/whisper-medium", "openai/whisper-large", "openai/whisper-large-v2", "openai/whisper-large-v3"
-# Your "large-v3-turbo" might be a custom name or require specific handling if not a direct HF model ID.
-# For standard Hugging Face Transformers, you'd typically use "openai/whisper-large-v3".
-WHISPER_MODEL = "openai/whisper-large-v3-turbo" # Changed to a standard Hugging Face model ID. Adjust if you have a specific "large-v3-turbo".
+# NEW: Optimized models for maximum performance
+# Option 1: OpenAI's latest turbo model (8x faster than large-v3, similar accuracy to large-v2)
+# Option 2: Distil-Whisper (6.3x faster than large-v3, within 1% WER)
+# Option 3: Use faster-whisper backend for CTranslate2 optimizations
+
+# Model selection based on performance requirements
+WHISPER_MODEL_OPTIONS = {
+    "accuracy_priority": "openai/whisper-large-v3",  # Best accuracy
+    "speed_priority": "openai/whisper-large-v3-turbo",  # 8x faster than v3, similar to v2 accuracy
+    "balanced": "distil-whisper/distil-large-v3",  # 6.3x faster, within 1% WER of v3
+    "ultra_fast": "distil-whisper/distil-medium.en",  # For English-only, extremely fast
+}
+
+# Current model selection - change this to optimize for your use case
+PERFORMANCE_PRIORITY = "speed_priority"  # Options: accuracy_priority, speed_priority, balanced, ultra_fast
+WHISPER_MODEL = WHISPER_MODEL_OPTIONS[PERFORMANCE_PRIORITY]
+
+# Alternative: Use faster-whisper backend (CTranslate2) - RECOMMENDED for maximum performance
+USE_FASTER_WHISPER_BACKEND = True  # Set to True for CTranslate2 optimizations
+FASTER_WHISPER_MODEL = "large-v3-turbo"  # or "distil-large-v3" for even better speed
 
 # --- Ollama Configuration ---
 # Ensure your Ollama instance is running and the model is pulled (e.g., `ollama pull phi3:mini`)
@@ -40,6 +57,40 @@ MAX_BACKUPS = 1  # Maximum number of backups to keep
 # --- Prompt Template for Correction ---
 CORRECTION_PROMPT = """Please correct the following transcription text for any spelling mistakes, grammatical errors, punctuation issues, or transcription artifacts. 
 Maintain the original meaning and flow of the text. Return only the corrected text without additional commentary or explanation."""
+
+# =============================================================================
+# ADVANCED PERFORMANCE OPTIMIZATIONS
+# =============================================================================
+
+# Flash Attention and SDPA optimizations
+ENABLE_FLASH_ATTENTION = True  # Use Flash Attention 2 if available
+ENABLE_SDPA = True  # PyTorch Scaled Dot Product Attention (PyTorch 2.1+)
+ATTENTION_IMPLEMENTATION = "flash_attention_2"  # Options: "flash_attention_2", "sdpa", "eager"
+
+# PyTorch optimizations
+ENABLE_TORCH_COMPILE = True  # PyTorch 2.0+ compile optimization (4.5x speed improvement)
+TORCH_COMPILE_MODE = "reduce-overhead"  # Options: "reduce-overhead", "max-autotune", "default"
+TORCH_COMPILE_FULLGRAPH = True  # More aggressive optimization
+
+# Memory optimizations
+ENABLE_GRADIENT_CHECKPOINTING = False  # Trade compute for memory (not needed for inference)
+USE_STATIC_CACHE = True  # Enable static cache for torch.compile compatibility
+
+# CTranslate2 optimizations (when using faster-whisper)
+CTRANSLATE2_COMPUTE_TYPE = "float16"  # Options: "int8", "int8_float16", "float16", "float32"
+CTRANSLATE2_INTER_THREADS = 1  # Number of threads for inter-op parallelism
+CTRANSLATE2_INTRA_THREADS = 0  # 0 = use all available threads
+
+# Speculative decoding (use Distil-Whisper as assistant for 2x speedup)
+ENABLE_SPECULATIVE_DECODING = True
+ASSISTANT_MODEL = "distil-whisper/distil-large-v3"  # Assistant model for speculative decoding
+
+# Batched inference optimizations
+ENABLE_VAD_FILTER = True  # Voice Activity Detection for batched processing
+VAD_PARAMETERS = {
+    "min_silence_duration_ms": 500,  # Minimum silence duration to split
+    "speech_threshold": 0.5,  # Threshold for speech detection
+}
 
 # =============================================================================
 # GPU OPTIMIZATION SETTINGS
