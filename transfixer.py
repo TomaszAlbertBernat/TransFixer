@@ -119,21 +119,40 @@ logger.setLevel(logging.INFO)
 logger.addHandler(file_handler)
 logger.addHandler(console_handler)
 
-# Log import status after logger is configured
+# Global flag for verbose logging (will be set by command line argument)
+verbose_logging = False
+
+def log_verbose(message, level=logging.INFO):
+    """Log a message only if verbose logging is enabled."""
+    if verbose_logging:
+        logger.log(level, message)
+
+def log_essential(message, level=logging.INFO):
+    """Log essential messages that should always be shown."""
+    # Always log at INFO level, but use print for non-verbose mode to avoid timestamp clutter
+    if verbose_logging:
+        logger.log(level, message)
+    else:
+        if level >= logging.WARNING:
+            logger.log(level, message)  # Always show warnings and errors
+        else:
+            print(message)  # Essential info without timestamp
+
+# Log import status after logger is configured (verbose only)
 if FASTER_WHISPER_AVAILABLE:
-    logger.info("✓ faster-whisper available for CTranslate2 optimizations")
+    log_verbose("✓ faster-whisper available for CTranslate2 optimizations")
 else:
-    logger.warning("⚠ faster-whisper not available. Install with: pip install faster-whisper")
+    log_verbose("⚠ faster-whisper not available. Install with: pip install faster-whisper", logging.WARNING)
 
 if FLASH_ATTENTION_AVAILABLE:
-    logger.info("✓ Flash Attention 2 available")
+    log_verbose("✓ Flash Attention 2 available")
 else:
-    logger.warning("⚠ Flash Attention not available. Install with: pip install flash-attn")
+    log_verbose("⚠ Flash Attention not available. Install with: pip install flash-attn", logging.WARNING)
 
 if PERFORMANCE_MONITORING_AVAILABLE:
-    logger.info("✓ Advanced performance monitoring available")
+    log_verbose("✓ Advanced performance monitoring available")
 else:
-    logger.warning("⚠ Advanced performance monitoring not available")
+    log_verbose("⚠ Advanced performance monitoring not available", logging.WARNING)
 
 # Global variables for model caching
 model_cache = {
@@ -163,9 +182,9 @@ def log_performance_analysis_during_transcription():
     
     performance_analysis_done = True
     
-    logger.info("=" * 60)
-    logger.info("📊 PERFORMANCE ANALYSIS DURING ACTIVE TRANSCRIPTION:")
-    logger.info("=" * 60)
+    log_verbose("=" * 60)
+    log_verbose("📊 PERFORMANCE ANALYSIS DURING ACTIVE TRANSCRIPTION:")
+    log_verbose("=" * 60)
     
     try:
         from advanced_performance_monitor import PerformanceOptimizer, PerformanceMetrics
@@ -194,44 +213,44 @@ def log_performance_analysis_during_transcription():
         optimal_settings = optimizer.suggest_optimal_settings(metrics)
         
         # Log current system state during transcription
-        logger.info(f"💻 System Under Load (during transcription):")
-        logger.info(f"   CPU: {metrics.cpu_percent:.1f}% | Memory: {metrics.memory_percent:.1f}%")
+        log_verbose(f"💻 System Under Load (during transcription):")
+        log_verbose(f"   CPU: {metrics.cpu_percent:.1f}% | Memory: {metrics.memory_percent:.1f}%")
         if metrics.gpu_memory_used_mb:
             gpu_usage = (metrics.gpu_memory_used_mb / metrics.gpu_memory_total_mb) * 100
-            logger.info(f"   GPU Memory: {gpu_usage:.1f}% ({metrics.gpu_memory_used_mb:.0f}MB/{metrics.gpu_memory_total_mb:.0f}MB)")
+            log_verbose(f"   GPU Memory: {gpu_usage:.1f}% ({metrics.gpu_memory_used_mb:.0f}MB/{metrics.gpu_memory_total_mb:.0f}MB)")
             if metrics.gpu_temperature:
-                logger.info(f"   GPU Temperature: {metrics.gpu_temperature}°C")
+                log_verbose(f"   GPU Temperature: {metrics.gpu_temperature}°C")
         
         # Log suggestions based on real working load
         if suggestions:
-            logger.info(f"🔧 Optimization Suggestions (based on real workload):")
+            log_verbose(f"🔧 Optimization Suggestions (based on real workload):")
             for suggestion in suggestions:
-                logger.info(f"   {suggestion}")
+                log_verbose(f"   {suggestion}")
         else:
-            logger.info(f"🎯 System performance looks optimal during transcription!")
+            log_verbose(f"🎯 System performance looks optimal during transcription!")
         
         # Log optimal settings based on actual usage
         if optimal_settings:
-            logger.info(f"⚙️  Recommended Settings (based on actual GPU usage):")
+            log_verbose(f"⚙️  Recommended Settings (based on actual GPU usage):")
             for key, value in optimal_settings.items():
-                logger.info(f"   {key}: {value}")
+                log_verbose(f"   {key}: {value}")
                 
             # Compare with current config settings
             from config import PERFORMANCE_MODE, MAX_BATCH_SIZE, DEFAULT_CHUNK_LENGTH
-            logger.info(f"📋 Current Config vs Recommended:")
-            logger.info(f"   Performance Mode: {PERFORMANCE_MODE} → {optimal_settings.get('performance_mode', 'current is fine')}")
+            log_verbose(f"📋 Current Config vs Recommended:")
+            log_verbose(f"   Performance Mode: {PERFORMANCE_MODE} → {optimal_settings.get('performance_mode', 'current is fine')}")
             if 'batch_size' in optimal_settings:
-                logger.info(f"   Batch Size: {MAX_BATCH_SIZE} → {optimal_settings['batch_size']}")
+                log_verbose(f"   Batch Size: {MAX_BATCH_SIZE} → {optimal_settings['batch_size']}")
             if 'chunk_length' in optimal_settings:
-                logger.info(f"   Chunk Length: {DEFAULT_CHUNK_LENGTH} → {optimal_settings['chunk_length']}")
+                log_verbose(f"   Chunk Length: {DEFAULT_CHUNK_LENGTH} → {optimal_settings['chunk_length']}")
         
-        logger.info(f"💡 Note: These recommendations are based on actual GPU utilization during transcription.")
-        logger.info(f"💡 You can adjust settings in config.py or use --batch-size parameter.")
+        log_verbose(f"💡 Note: These recommendations are based on actual GPU utilization during transcription.")
+        log_verbose(f"💡 You can adjust settings in config.py or use --batch-size parameter.")
                 
     except Exception as e:
         logger.warning(f"Could not generate performance analysis: {e}")
     
-    logger.info("=" * 60)
+    log_verbose("=" * 60)
 
 def should_unload_model():
     """Determine if the model should be unloaded based on system resources."""
@@ -751,7 +770,7 @@ def correct_file(args):
         return
     
     try:
-        logger.info(f"Starting correction of {trans_path} using Ollama model {OLLAMA_MODEL}")
+        log_essential(f"✏️  Correcting: {os.path.basename(trans_path)}")
         with open(trans_path, "r", encoding="utf-8") as f:
             text_to_correct = f.read()
         payload = {
@@ -774,7 +793,7 @@ def correct_file(args):
         ensure_dir(os.path.dirname(corrected_path))
         with open(corrected_path, "w", encoding="utf-8") as f:
             f.write(corrected_text.strip())
-        logger.info(f"Successfully corrected {trans_path} and saved to {corrected_path}")
+        log_verbose(f"✅ Successfully corrected {os.path.basename(trans_path)}")
 
     except requests.exceptions.ConnectionError as e:
         logger.error(f"Ollama API connection error for {trans_path}: {e}.")
@@ -1060,7 +1079,7 @@ def _transcribe_batch_faster_whisper(file_batch, model, device):
             continue
             
         try:
-            logger.info(f"Transcribing {os.path.basename(audio_path)} with faster-whisper")
+            log_essential(f"🎧 Transcribing: {os.path.basename(audio_path)}")
             
             # Use faster-whisper transcribe method
             transcribe_options = {
@@ -1103,10 +1122,10 @@ def _transcribe_batch_faster_whisper(file_batch, model, device):
                 f.write(transcription)
             
             if is_valid_transcription(trans_path):
-                logger.info(f"Successfully transcribed {audio_path}")
+                log_verbose(f"✅ Successfully transcribed {os.path.basename(audio_path)}")
                 successful += 1
             else:
-                logger.warning(f"Transcription too short for {audio_path}")
+                logger.warning(f"⚠️ Transcription too short for {os.path.basename(audio_path)}")
                 failed += 1
                 
         except Exception as e:
@@ -1140,7 +1159,7 @@ def _transcribe_batch_transformers(file_batch, pipeline, device):
             continue
             
         try:
-            logger.info(f"Transcribing {os.path.basename(audio_path)} with transformers")
+            log_essential(f"🎧 Transcribing: {os.path.basename(audio_path)}")
             
             # Use optimized generation parameters
             generate_kwargs = {
@@ -1167,10 +1186,10 @@ def _transcribe_batch_transformers(file_batch, pipeline, device):
                 f.write(transcription)
             
             if is_valid_transcription(trans_path):
-                logger.info(f"Successfully transcribed {audio_path}")
+                log_verbose(f"✅ Successfully transcribed {os.path.basename(audio_path)}")
                 successful += 1
             else:
-                logger.warning(f"Transcription too short for {audio_path}")
+                logger.warning(f"⚠️ Transcription too short for {os.path.basename(audio_path)}")
                 failed += 1
                 
         except Exception as e:
@@ -1187,7 +1206,7 @@ def _transcribe_batch_transformers(file_batch, pipeline, device):
 
 def preload_and_optimize_model():
     """Preload and optimize the Whisper model for maximum performance."""
-    logger.info("Preloading and optimizing Whisper model for maximum performance...")
+    log_verbose("Preloading and optimizing Whisper model for maximum performance...")
     
     try:
         # Initialize the model
@@ -1197,7 +1216,7 @@ def preload_and_optimize_model():
         resources = get_system_resources()
         if resources['gpu_info']:
             gpu = resources['gpu_info'][0]
-            logger.info(f"Model loaded. GPU Memory usage: {gpu['memory_used']}MB/{gpu['memory_total']}MB "
+            log_verbose(f"Model loaded. GPU Memory usage: {gpu['memory_used']}MB/{gpu['memory_total']}MB "
                        f"({gpu['memory_used']/gpu['memory_total']*100:.1f}%)")
             
             # Check if we can enable additional optimizations
@@ -1208,11 +1227,11 @@ def preload_and_optimize_model():
                         if model_cache['model'] is not None:
                             # Try to enable flash attention or other optimizations
                             if hasattr(torch.nn.functional, 'scaled_dot_product_attention'):
-                                logger.info("Scaled dot product attention available - model should use optimized attention")
+                                log_verbose("Scaled dot product attention available - model should use optimized attention")
                             
                             # Enable torch compile if available (PyTorch 2.0+)
                             if hasattr(torch, 'compile'):
-                                logger.info("Enabling PyTorch compile for maximum performance")
+                                log_verbose("Enabling PyTorch compile for maximum performance")
                                 try:
                                     # Enable static cache for torch.compile compatibility
                                     if hasattr(model, 'generation_config'):
@@ -1220,25 +1239,40 @@ def preload_and_optimize_model():
                                     
                                     # Apply torch.compile with optimal settings
                                     model = torch.compile(model, mode="reduce-overhead", fullgraph=True)
-                                    logger.info("✓ Torch compile enabled - expect 4.5x speed improvement")
+                                    log_verbose("✓ Torch compile enabled - expect 4.5x speed improvement")
                                 except Exception as e:
                                     logger.warning(f"Torch compile failed: {e}")
                                 
                 except Exception as e:
                     logger.warning(f"Could not apply additional optimizations: {e}")
         
-        logger.info("Model preloading and optimization completed successfully")
+        log_verbose("Model preloading and optimization completed successfully")
         return True
         
     except Exception as e:
         logger.error(f"Error during model preloading and optimization: {e}")
         return False
 
-def main(num_workers_arg, batch_size_arg, analyze_performance_arg=False):
-    global analyze_performance
+def main(num_workers_arg, batch_size_arg, analyze_performance_arg=False, verbose_logging_arg=False):
+    global analyze_performance, verbose_logging
     analyze_performance = analyze_performance_arg
+    verbose_logging = verbose_logging_arg
     
-    logger.info("Initializing directories...")
+    # Set console handler level based on verbose flag
+    console_handler = None
+    for handler in logger.handlers:
+        if isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler):
+            console_handler = handler
+            break
+    
+    if console_handler:
+        if verbose_logging:
+            console_handler.setLevel(logging.DEBUG)
+            logger.setLevel(logging.DEBUG)
+        else:
+            console_handler.setLevel(logging.WARNING)  # Only show warnings and errors by default
+    
+    log_verbose("Initializing directories...")
     ensure_dir(AUDIO_DIR)
     ensure_dir(TRANSCRIPTIONS_DIR)
     ensure_dir(CORRECTED_DIR)
@@ -1248,39 +1282,40 @@ def main(num_workers_arg, batch_size_arg, analyze_performance_arg=False):
         logger.error("OLLAMA_MODEL and CORRECTION_PROMPT must be set in the configuration.")
         sys.exit(1)
 
-    logger.info(f"Using Ollama model: {OLLAMA_MODEL} via {OLLAMA_API_URL}")
+    log_essential(f"🤖 Using Ollama model: {OLLAMA_MODEL}")
     
     # Log initial performance analysis (one-time)
     if PERFORMANCE_MONITORING_AVAILABLE and analyze_performance:
-        logger.info("✓ Advanced performance monitoring available (logging initial analysis only)")
+        log_verbose("✓ Advanced performance monitoring available (logging initial analysis only)")
     elif PERFORMANCE_MONITORING_AVAILABLE and not analyze_performance:
-        logger.info("ℹ️ Advanced performance monitoring available but disabled (use --analyze-performance to enable)")
+        log_verbose("ℹ️ Advanced performance monitoring available but disabled (use --analyze-performance to enable)")
     
-    # Log optimization settings
-    logger.info("="*60)
-    logger.info("TRANSFIXER OPTIMIZATIONS ENABLED:")
-    logger.info("="*60)
-    
-    # Display performance mode
-    from config import get_performance_summary
-    perf_summary = get_performance_summary()
-    logger.info(f"🚀 Performance Mode: {perf_summary['mode'].upper()}")
-    logger.info(f"🎮 GPU Memory Usage: {perf_summary['gpu_memory_fraction']} (Safety Factor: {perf_summary['memory_safety_factor']})")
-    logger.info(f"📦 Max Batch Size: {perf_summary['max_batch_size']}")
-    logger.info(f"⏱️  Audio Chunk Length: {perf_summary['default_chunk_length']} (Range: {perf_summary['chunk_length_range']})")
-    
-    if ENABLE_MIXED_PRECISION:
-        logger.info("✓ Automatic Mixed Precision (AMP) enabled for faster inference")
-    if SMART_GPU_SELECTION:
-        logger.info("✓ Smart GPU selection based on available memory")
-    if perf_summary['aggressive_batching']:
-        logger.info("✓ Aggressive batching enabled for maximum throughput")
-    else:
-        logger.info("✓ Conservative batch sizing to prevent OOM errors")
-    logger.info("="*60)
+    # Log optimization settings (verbose only)
+    if verbose_logging:
+        logger.info("="*60)
+        logger.info("TRANSFIXER OPTIMIZATIONS ENABLED:")
+        logger.info("="*60)
+        
+        # Display performance mode
+        from config import get_performance_summary
+        perf_summary = get_performance_summary()
+        logger.info(f"🚀 Performance Mode: {perf_summary['mode'].upper()}")
+        logger.info(f"🎮 GPU Memory Usage: {perf_summary['gpu_memory_fraction']} (Safety Factor: {perf_summary['memory_safety_factor']})")
+        logger.info(f"📦 Max Batch Size: {perf_summary['max_batch_size']}")
+        logger.info(f"⏱️  Audio Chunk Length: {perf_summary['default_chunk_length']} (Range: {perf_summary['chunk_length_range']})")
+        
+        if ENABLE_MIXED_PRECISION:
+            logger.info("✓ Automatic Mixed Precision (AMP) enabled for faster inference")
+        if SMART_GPU_SELECTION:
+            logger.info("✓ Smart GPU selection based on available memory")
+        if perf_summary['aggressive_batching']:
+            logger.info("✓ Aggressive batching enabled for maximum throughput")
+        else:
+            logger.info("✓ Conservative batch sizing to prevent OOM errors")
+        logger.info("="*60)
     
     # Preload and optimize the Whisper model for maximum performance
-    logger.info("Preloading Whisper model with memory optimizations...")
+    log_essential("🔄 Loading Whisper model...")
     if not preload_and_optimize_model():
         logger.warning("Model preloading failed, but continuing with standard initialization")
     else:
@@ -1288,7 +1323,8 @@ def main(num_workers_arg, batch_size_arg, analyze_performance_arg=False):
         if resources['gpu_info']:
             gpu = resources['gpu_info'][0]
             vram_usage_percent = (gpu['memory_used'] / gpu['memory_total']) * 100
-            logger.info(f"Memory optimized! Using {gpu['memory_used']}MB/{gpu['memory_total']}MB ({vram_usage_percent:.1f}%) of GPU memory")
+            log_essential(f"✅ Model loaded! Using {vram_usage_percent:.1f}% GPU memory")
+            log_verbose(f"Memory details: {gpu['memory_used']}MB/{gpu['memory_total']}MB")
     
     # Performance analysis will be done during first transcription batch
 
@@ -1296,9 +1332,9 @@ def main(num_workers_arg, batch_size_arg, analyze_performance_arg=False):
         cycle_count = 0
         while not shutdown_event.is_set():
             cycle_count += 1
-            logger.info("="*50)
-            logger.info(f"Starting processing cycle #{cycle_count} at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-            logger.info("="*50)
+            log_verbose("="*50)
+            log_verbose(f"Starting processing cycle #{cycle_count} at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            log_verbose("="*50)
             
             if shutdown_event.is_set(): break
             create_backup()
@@ -1307,14 +1343,14 @@ def main(num_workers_arg, batch_size_arg, analyze_performance_arg=False):
             if shutdown_event.is_set(): break
 
             # Phase 1: Transcribe audio files
-            logger.info("-" * 10 + " Phase 1: Transcription " + "-" * 10)
+            log_verbose("-" * 10 + " Phase 1: Transcription " + "-" * 10)
             trans_tasks = collect_transcription_tasks()
             if trans_tasks and not shutdown_event.is_set():
-                logger.info(f"Found {len(trans_tasks)} files to transcribe")
+                log_essential(f"📁 Found {len(trans_tasks)} files to transcribe")
                 resources = get_system_resources()
                 num_processes = num_workers_arg
                 batch_size = batch_size_arg
-                logger.info(f"Using {num_processes} processes with batch size {batch_size}")
+                log_verbose(f"Using {num_processes} processes with batch size {batch_size}")
                 task_batches = split_tasks_into_batches(trans_tasks, batch_size)
                 
                 try:
@@ -1349,17 +1385,17 @@ def main(num_workers_arg, batch_size_arg, analyze_performance_arg=False):
                             # If tasks don't respond to cancellation, this will wait.
                 except Exception as e_exec:
                     logger.error(f"Error with transcription executor: {e_exec}")
-                logger.info("Transcription phase completed or interrupted.")
+                log_verbose("Transcription phase completed or interrupted.")
             elif not trans_tasks:
-                logger.info("No new audio files to transcribe")
+                log_verbose("No new audio files to transcribe")
             
             if shutdown_event.is_set(): break
 
             # Phase 2: Correct transcriptions
-            logger.info("-" * 10 + " Phase 2: Correction " + "-" * 10)
+            log_verbose("-" * 10 + " Phase 2: Correction " + "-" * 10)
             correct_tasks = collect_correction_tasks()
             if correct_tasks and not shutdown_event.is_set():
-                logger.info(f"Found {len(correct_tasks)} transcriptions to correct")
+                log_essential(f"✏️  Found {len(correct_tasks)} transcriptions to correct")
                 try:
                     with Pool(processes=1) as pool: # TODO: Parameterize correction workers
                         async_results = []
@@ -1394,19 +1430,19 @@ def main(num_workers_arg, batch_size_arg, analyze_performance_arg=False):
                             pool.join() # Normal shutdown
                 except Exception as e_pool:
                     logger.error(f"Error with correction pool: {e_pool}")
-                logger.info("Correction phase completed or interrupted.")
+                log_verbose("Correction phase completed or interrupted.")
             elif not correct_tasks:
-                logger.info("No new transcriptions to correct")
+                log_verbose("No new transcriptions to correct")
 
             if shutdown_event.is_set():
-                logger.info("Shutdown requested, breaking main loop before sleep.")
+                log_verbose("Shutdown requested, breaking main loop before sleep.")
                 break
             
-            logger.info(f"Cycle complete. Sleeping for {CHECK_INTERVAL} seconds.")
+            log_verbose(f"Cycle complete. Sleeping for {CHECK_INTERVAL} seconds.")
             # Sleep with frequent shutdown checks
             for i in range(CHECK_INTERVAL):
                 if shutdown_event.is_set(): 
-                    logger.info(f"Shutdown detected during sleep (after {i} seconds)")
+                    log_verbose(f"Shutdown detected during sleep (after {i} seconds)")
                     break
                 time.sleep(1)
 
@@ -1436,21 +1472,22 @@ if __name__ == "__main__":
     signal.signal(signal.SIGTERM, signal_handler)
 
     try:
-        logger.info("Starting TransFixer (Ollama Edition)...")
+        log_essential("🚀 Starting TransFixer (Ollama Edition)...")
         parser = argparse.ArgumentParser(description="TransFixer: Transcribe and correct audio files.")
         parser.add_argument("--num-workers", type=int, choices=[1, 2], default=1, help="Number of worker processes for transcription (1 or 2). Default is 1.")
         parser.add_argument("--batch-size", type=int, default=8, help="Batch size for transcription tasks. Default is 8.")
         parser.add_argument("--cleanup-locks", action="store_true", help="Remove all lock files and exit. Use this if transcription was interrupted.")
         parser.add_argument("--analyze-performance", action="store_true", help="Enable detailed performance analysis during transcription.")
+        parser.add_argument("--verbose-logging", action="store_true", help="Enable verbose logging output. Default is minimal logging (only progress and current transcription).")
         args = parser.parse_args()
         
         # Handle cleanup locks option
         if args.cleanup_locks:
-            logger.info("🧹 Cleaning up lock files...")
+            log_essential("🧹 Cleaning up lock files...")
             cleanup_lock_files()
-            logger.info("✅ Lock file cleanup completed. You can now run TransFixer normally.")
+            log_essential("✅ Lock file cleanup completed. You can now run TransFixer normally.")
             sys.exit(0)
-        main(args.num_workers, args.batch_size, args.analyze_performance)
+        main(args.num_workers, args.batch_size, args.analyze_performance, args.verbose_logging)
 
     except KeyboardInterrupt:
         logger.info("KeyboardInterrupt caught in __main__, ensuring shutdown event is set.")
