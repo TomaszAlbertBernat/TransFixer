@@ -1003,7 +1003,7 @@ def transcribe_files_batch(file_batch):
     
     # Log performance analysis after model is loaded and about to start transcription
     # This will capture the real GPU usage during active transcription
-    if not performance_analysis_done:
+    if not performance_analysis_done and analyze_performance:
         # Start transcription in a separate thread to analyze while it's running
         def delayed_analysis():
             time.sleep(3)  # Wait for transcription to start using GPU
@@ -1146,11 +1146,12 @@ def _transcribe_batch_transformers(file_batch, pipeline, device):
                 "num_beams": 1,
                 "use_cache": True,
                 "pad_token_id": pipeline.tokenizer.eos_token_id,
+                "input_features": None  # This will be set by the pipeline
             }
             
             # Use automatic mixed precision for GPU inference
             if ENABLE_MIXED_PRECISION and "cuda" in device:
-                with autocast():
+                with torch.amp.autocast('cuda'):  # Updated to use new autocast syntax
                     result = pipeline(audio_path, generate_kwargs=generate_kwargs)
             else:
                 result = pipeline(audio_path, generate_kwargs=generate_kwargs)
@@ -1230,7 +1231,7 @@ def preload_and_optimize_model():
         logger.error(f"Error during model preloading and optimization: {e}")
         return False
 
-def main(num_workers_arg, batch_size_arg):
+def main(num_workers_arg, batch_size_arg, analyze_performance=False):
     logger.info("Initializing directories...")
     ensure_dir(AUDIO_DIR)
     ensure_dir(TRANSCRIPTIONS_DIR)
@@ -1244,8 +1245,10 @@ def main(num_workers_arg, batch_size_arg):
     logger.info(f"Using Ollama model: {OLLAMA_MODEL} via {OLLAMA_API_URL}")
     
     # Log initial performance analysis (one-time)
-    if PERFORMANCE_MONITORING_AVAILABLE:
+    if PERFORMANCE_MONITORING_AVAILABLE and analyze_performance:
         logger.info("✓ Advanced performance monitoring available (logging initial analysis only)")
+    elif PERFORMANCE_MONITORING_AVAILABLE and not analyze_performance:
+        logger.info("ℹ️ Advanced performance monitoring available but disabled (use --analyze-performance to enable)")
     
     # Log optimization settings
     logger.info("="*60)
@@ -1311,7 +1314,8 @@ def main(num_workers_arg, batch_size_arg):
                 try:
                     with ProcessPoolExecutor(max_workers=num_processes) as executor:
                         futures = {executor.submit(process_transcription_batch, batch) for batch in task_batches}
-                        with tqdm(total=len(trans_tasks), desc="Overall Transcription Progress", position=0, leave=False) as pbar:
+                        with tqdm(total=len(trans_tasks), desc="Overall Transcription Progress", position=0, leave=True, 
+                                 bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]') as pbar:
                             for future in as_completed(futures):
                                 if shutdown_event.is_set():
                                     logger.info("Shutdown during transcription: cancelling pending tasks.")
@@ -1431,6 +1435,7 @@ if __name__ == "__main__":
         parser.add_argument("--num-workers", type=int, choices=[1, 2], default=1, help="Number of worker processes for transcription (1 or 2). Default is 1.")
         parser.add_argument("--batch-size", type=int, default=8, help="Batch size for transcription tasks. Default is 8.")
         parser.add_argument("--cleanup-locks", action="store_true", help="Remove all lock files and exit. Use this if transcription was interrupted.")
+        parser.add_argument("--analyze-performance", action="store_true", help="Enable detailed performance analysis during transcription.")
         args = parser.parse_args()
         
         # Handle cleanup locks option
@@ -1439,7 +1444,7 @@ if __name__ == "__main__":
             cleanup_lock_files()
             logger.info("✅ Lock file cleanup completed. You can now run TransFixer normally.")
             sys.exit(0)
-        main(args.num_workers, args.batch_size)
+        main(args.num_workers, args.batch_size, args.analyze_performance)
 
     except KeyboardInterrupt:
         logger.info("KeyboardInterrupt caught in __main__, ensuring shutdown event is set.")
