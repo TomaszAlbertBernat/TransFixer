@@ -1430,7 +1430,15 @@ if __name__ == "__main__":
         parser = argparse.ArgumentParser(description="TransFixer: Transcribe and correct audio files.")
         parser.add_argument("--num-workers", type=int, choices=[1, 2], default=1, help="Number of worker processes for transcription (1 or 2). Default is 1.")
         parser.add_argument("--batch-size", type=int, default=8, help="Batch size for transcription tasks. Default is 8.")
+        parser.add_argument("--cleanup-locks", action="store_true", help="Remove all lock files and exit. Use this if transcription was interrupted.")
         args = parser.parse_args()
+        
+        # Handle cleanup locks option
+        if args.cleanup_locks:
+            logger.info("🧹 Cleaning up lock files...")
+            cleanup_lock_files()
+            logger.info("✅ Lock file cleanup completed. You can now run TransFixer normally.")
+            sys.exit(0)
         main(args.num_workers, args.batch_size)
 
     except KeyboardInterrupt:

@@ -191,13 +191,11 @@ start_performance_monitoring()
 # Monitors CPU, GPU, memory usage and suggests optimizations
 ```
 
-### **Performance Benchmarking**
+### **Performance Monitoring**
 ```bash
-# Run comprehensive performance benchmark
-python benchmark_performance.py audio_file.wav --output-dir benchmark_results
-
-# Quick benchmark (fewer configurations)
-python benchmark_performance.py audio_file.wav --quick
+# Real-time monitoring is automatically enabled when running TransFixer
+# Check logs/performance_monitor.log for detailed metrics
+# Performance suggestions are provided in real-time during transcription
 ```
 
 ### **Common Performance Issues & Solutions**
@@ -326,13 +324,13 @@ metrics_file = export_performance_metrics()
 print(f"Metrics saved to: {metrics_file}")
 ```
 
-### **3. Comprehensive Benchmarking**
+### **3. Performance Testing**
 ```bash
-# Test all optimization strategies
-python benchmark_performance.py test_audio.wav
+# Test your configuration with actual audio files
+python3 transfixer.py
 
-# Results saved to benchmark_results/
-# Compare different configurations side-by-side
+# Monitor performance in real-time through logs
+# Performance metrics are automatically tracked and logged
 ```
 
 ---
@@ -370,12 +368,12 @@ VAD_PARAMETERS = {
 ## **📝 Performance Testing Checklist**
 
 ### **Before Optimization:**
-- [ ] Run baseline benchmark: `python benchmark_performance.py audio.wav`
-- [ ] Document current performance metrics
+- [ ] Test current configuration with sample audio files
+- [ ] Document current performance metrics from logs
 - [ ] Note GPU memory usage and temperature
 
 ### **After Each Optimization:**
-- [ ] Run benchmark with new settings
+- [ ] Test with new settings using sample audio files
 - [ ] Compare transcription accuracy (sample files)
 - [ ] Monitor system stability (run for 30+ minutes)
 - [ ] Check for memory leaks or temperature issues

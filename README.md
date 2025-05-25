@@ -39,9 +39,8 @@ A powerful, optimized audio transcription and correction system that uses advanc
 ├── config.py                     # Main configuration settings
 ├── transfixer.py                 # Main application script
 ├── requirements.txt              # Python dependencies
-├── performance_summary.py        # System analysis and recommendations
-├── benchmark_performance.py      # Comprehensive benchmarking
 ├── advanced_performance_monitor.py # Real-time monitoring
+├── install_dependencies.py       # Dependency installation helper
 └── PERFORMANCE_TUNING_GUIDE.md   # Complete optimization guide
 ```
 
@@ -63,9 +62,10 @@ pip install flash-attn>=2.0.0
 ollama pull llama3.2:3b
 ```
 
-### 3. Analyze Your System
+### 3. Configure Performance
 ```bash
-python3 performance_summary.py
+# Edit config.py to set your preferred performance mode
+# Options: "conservative", "balanced", "aggressive"
 ```
 
 ### 4. Run TransFixer
@@ -97,28 +97,24 @@ CTRANSLATE2_COMPUTE_TYPE = "float16"
 
 ## 📊 Performance Tools
 
-### System Analysis
-```bash
-python3 performance_summary.py
-# Analyzes your hardware and provides personalized optimization recommendations
-```
-
-### Comprehensive Benchmarking
-```bash
-python3 benchmark_performance.py test_audio.wav
-# Tests all optimization strategies and compares performance
-```
-
 ### Real-time Monitoring
 ```bash
 # Monitoring is automatically enabled when running TransFixer
 # Check logs/performance_monitor.log for detailed metrics
 ```
 
+### Performance Configuration
+```bash
+# Edit config.py to optimize for your hardware:
+# - PERFORMANCE_MODE: "conservative", "balanced", "aggressive"
+# - USE_FASTER_WHISPER_BACKEND: True for maximum speed
+# - ENABLE_TORCH_COMPILE: True for PyTorch 2.0+ optimizations
+```
+
 ## Usage
 
 1. **Place audio files** in the `audio/` directory
-2. **Configure optimizations** based on your hardware (run `performance_summary.py`)
+2. **Configure optimizations** in `config.py` based on your hardware
 3. **Run TransFixer**: `python3 transfixer.py`
 4. **Monitor performance** through real-time logs and suggestions
 
@@ -142,10 +138,10 @@ Edit `config.py` to customize:
 ## 🔧 Troubleshooting
 
 ### Performance Issues
-1. **Run system analysis**: `python3 performance_summary.py`
-2. **Check optimization status** in logs
-3. **Verify GPU utilization**: `nvidia-smi`
-4. **Review performance recommendations**
+1. **Check optimization status** in logs
+2. **Verify GPU utilization**: `nvidia-smi`
+3. **Review performance recommendations** in real-time logs
+4. **Adjust performance mode** in `config.py`
 
 ### Memory Issues
 1. **Reduce batch size**: Set `MAX_BATCH_SIZE = 8`
