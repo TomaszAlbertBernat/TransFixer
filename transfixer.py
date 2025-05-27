@@ -258,14 +258,14 @@ def should_unload_model():
     
     # Check memory usage
     if resources['memory_percent'] > MIN_MEMORY_THRESHOLD * 100:
-        logger.info("Memory usage high, unloading model")
+        log_verbose("Memory usage high, unloading model")
         return True
     
     # Check GPU memory if available
     if resources['gpu_info']:
         gpu = resources['gpu_info'][0]
         if gpu['memory_used'] / gpu['memory_total'] > MIN_MEMORY_THRESHOLD:
-            logger.info("GPU memory usage high, unloading model")
+            log_verbose("GPU memory usage high, unloading model")
             return True
     
     return False
@@ -280,7 +280,7 @@ def is_model_cache_valid():
     
     # Check if cache has expired
     if datetime.now() - model_cache['last_used'] > timedelta(seconds=MODEL_CACHE_TIMEOUT):
-        logger.info("Model cache expired")
+        log_verbose("Model cache expired")
         return False
     
     # Check if we should unload due to resource constraints
@@ -296,7 +296,7 @@ def initialize_whisper():
     # Check if we can use the cached model
     with model_cache['lock']:
         if is_model_cache_valid():
-            logger.info("Using cached model")
+            log_verbose("Using cached model")
             model_cache['last_used'] = datetime.now()
             return
     
@@ -304,10 +304,10 @@ def initialize_whisper():
     
     # Choose optimal backend
     if USE_FASTER_WHISPER_BACKEND and FASTER_WHISPER_AVAILABLE:
-        logger.info(f"Process {process_id}: Using faster-whisper backend (CTranslate2) for maximum performance")
+        log_verbose(f"Process {process_id}: Using faster-whisper backend (CTranslate2) for maximum performance")
         _initialize_faster_whisper()
     else:
-        logger.info(f"Process {process_id}: Using transformers backend")
+        log_verbose(f"Process {process_id}: Using transformers backend")
         _initialize_transformers_whisper()
 
 def _initialize_faster_whisper():
@@ -325,15 +325,15 @@ def _initialize_faster_whisper():
         else:
             device = "cuda:0"
             device_index = 0
-        logger.info(f"Process {process_id}: Using faster-whisper with {device}")
+        log_verbose(f"Process {process_id}: Using faster-whisper with {device}")
     else:
         device = "cpu"
         device_index = None
-        logger.info(f"Process {process_id}: Using faster-whisper with CPU")
+        log_verbose(f"Process {process_id}: Using faster-whisper with CPU")
 
     try:
         with model_cache['lock']:
-            logger.info(f"Process {process_id}: Loading faster-whisper model {FASTER_WHISPER_MODEL}...")
+            log_verbose(f"Process {process_id}: Loading faster-whisper model {FASTER_WHISPER_MODEL}...")
             
             # Initialize faster-whisper model with optimizations
             model = FasterWhisperModel(
@@ -345,7 +345,7 @@ def _initialize_faster_whisper():
                 num_workers=1,  # Single worker for now
             )
             
-            logger.info(f"Process {process_id}: faster-whisper model loaded successfully")
+            log_verbose(f"Process {process_id}: faster-whisper model loaded successfully")
             
             # Get optimal batch size for CTranslate2
             optimal_batch_size = calculate_conservative_batch_size(device)
@@ -354,7 +354,7 @@ def _initialize_faster_whisper():
             if hasattr(model, 'model'):  # Check if we can create batched pipeline
                 try:
                     batched_pipeline = BatchedInferencePipeline(model=model)
-                    logger.info(f"Process {process_id}: Batched inference pipeline created")
+                    log_verbose(f"Process {process_id}: Batched inference pipeline created")
                 except Exception as e:
                     logger.warning(f"Process {process_id}: Could not create batched pipeline: {e}")
                     batched_pipeline = model
@@ -371,12 +371,12 @@ def _initialize_faster_whisper():
                 'backend': 'faster-whisper'
             })
             
-            logger.info(f"Process {process_id}: faster-whisper initialization complete")
+            log_verbose(f"Process {process_id}: faster-whisper initialization complete")
             
     except Exception as e:
         logger.error(f"Process {process_id}: Error initializing faster-whisper: {e}")
         # Fallback to transformers
-        logger.info(f"Process {process_id}: Falling back to transformers backend")
+        log_verbose(f"Process {process_id}: Falling back to transformers backend")
         _initialize_transformers_whisper()
 
 def _initialize_transformers_whisper():
@@ -390,20 +390,20 @@ def _initialize_transformers_whisper():
         if gpu_count > 1:
             best_gpu = select_best_gpu()
             device = f"cuda:{best_gpu}" if best_gpu is not None else "cuda:0"
-            logger.info(f"Process {process_id} using smart-selected GPU {best_gpu} of {gpu_count} available GPUs")
+            log_verbose(f"Process {process_id} using smart-selected GPU {best_gpu} of {gpu_count} available GPUs")
         else:
             device = "cuda:0"
-            logger.info(f"Process {process_id} using single available GPU")
+            log_verbose(f"Process {process_id} using single available GPU")
     else:
         device = "cpu"
-        logger.info(f"Process {process_id} using CPU")
+        log_verbose(f"Process {process_id} using CPU")
 
     # Always use float16 for GPU, float32 for CPU
     torch_dtype = torch.float16 if device != "cpu" else torch.float32
 
     try:
         with model_cache['lock']:
-            logger.info(f"Process {process_id}: Loading model {WHISPER_MODEL}...")
+            log_verbose(f"Process {process_id}: Loading model {WHISPER_MODEL}...")
             
             # Model loading with optimizations
             model_kwargs = {
@@ -415,18 +415,18 @@ def _initialize_transformers_whisper():
             # Add attention implementation if Flash Attention is available
             if ENABLE_FLASH_ATTENTION and FLASH_ATTENTION_AVAILABLE and ATTENTION_IMPLEMENTATION == "flash_attention_2":
                 model_kwargs["attn_implementation"] = "flash_attention_2"
-                logger.info(f"Process {process_id}: Using Flash Attention 2")
+                log_verbose(f"Process {process_id}: Using Flash Attention 2")
             elif ENABLE_SDPA:
                 model_kwargs["attn_implementation"] = "sdpa"
-                logger.info(f"Process {process_id}: Using SDPA (Scaled Dot Product Attention)")
+                log_verbose(f"Process {process_id}: Using SDPA (Scaled Dot Product Attention)")
             
             model = AutoModelForSpeechSeq2Seq.from_pretrained(WHISPER_MODEL, **model_kwargs)
             model.to(device)
-            logger.info(f"Process {process_id}: Model loaded successfully")
+            log_verbose(f"Process {process_id}: Model loaded successfully")
 
-            logger.info(f"Process {process_id}: Loading processor...")
+            log_verbose(f"Process {process_id}: Loading processor...")
             processor = AutoProcessor.from_pretrained(WHISPER_MODEL)
-            logger.info(f"Process {process_id}: Processor loaded successfully")
+            log_verbose(f"Process {process_id}: Processor loaded successfully")
 
             # Get current resource info and calculate optimal settings
             resources = get_system_resources()
@@ -460,11 +460,11 @@ def _initialize_transformers_whisper():
                     elif available_memory_gb > 4:
                         chunk_length_s = 35
             
-            logger.info(f"Process {process_id}: Performance mode: {PERFORMANCE_MODE} | "
+            log_verbose(f"Process {process_id}: Performance mode: {PERFORMANCE_MODE} | "
                        f"Using batch_size={optimal_batch_size}, chunk_length_s={chunk_length_s}")
 
             # Create the pipeline with optimized settings
-            logger.info(f"Process {process_id}: Creating optimized Whisper pipeline...")
+            log_verbose(f"Process {process_id}: Creating optimized Whisper pipeline...")
             whisper_pipeline = pipeline(
                 "automatic-speech-recognition",
                 model=model,
@@ -476,11 +476,11 @@ def _initialize_transformers_whisper():
                 torch_dtype=torch_dtype,
                 device=device,
             )
-            logger.info(f"Process {process_id}: Optimized pipeline created successfully")
+            log_verbose(f"Process {process_id}: Optimized pipeline created successfully")
             
             # Enable torch compile if available (PyTorch 2.0+)
             if ENABLE_TORCH_COMPILE and hasattr(torch, 'compile'):
-                logger.info("Enabling PyTorch compile for maximum performance")
+                log_verbose("Enabling PyTorch compile for maximum performance")
                 try:
                     # Apply torch.compile with optimal settings
                     model = torch.compile(
@@ -488,7 +488,7 @@ def _initialize_transformers_whisper():
                         mode=TORCH_COMPILE_MODE, 
                         fullgraph=TORCH_COMPILE_FULLGRAPH
                     )
-                    logger.info("✓ Torch compile enabled - expect 4.5x speed improvement")
+                    log_verbose("✓ Torch compile enabled - expect 4.5x speed improvement")
                 except Exception as e:
                     logger.warning(f"Torch compile failed: {e}")
             
@@ -518,7 +518,7 @@ def cleanup_whisper():
         process_id = os.getpid()
         device = model_cache.get('device', 'cpu')
         
-        logger.info(f"Process {process_id}: Cleaning up Whisper model resources...")
+        log_verbose(f"Process {process_id}: Cleaning up Whisper model resources...")
         
         try:
             # Move model to CPU first to free GPU memory
@@ -550,7 +550,7 @@ def cleanup_whisper():
                 import gc
                 gc.collect()
                 
-                logger.info(f"Process {process_id}: Enhanced cleanup completed for {device}")
+                log_verbose(f"Process {process_id}: Enhanced cleanup completed for {device}")
                 
         except Exception as e:
             logger.error(f"Process {process_id}: Error during Whisper cleanup: {e}")
@@ -561,19 +561,19 @@ def create_backup():
     backup_dir = os.path.join("backup", timestamp)
     os.makedirs(backup_dir, exist_ok=True)
     
-    logger.info(f"Creating backup in {backup_dir}")
+    log_verbose(f"Creating backup in {backup_dir}")
     
     # Backup transcriptions
     trans_backup = os.path.join(backup_dir, "transcriptions")
     if os.path.exists(TRANSCRIPTIONS_DIR):
         shutil.copytree(TRANSCRIPTIONS_DIR, trans_backup, dirs_exist_ok=True)
-        logger.info("Transcriptions backed up successfully")
+        log_verbose("Transcriptions backed up successfully")
     
     # Backup corrected files
     corr_backup = os.path.join(backup_dir, "corrected")
     if os.path.exists(CORRECTED_DIR):
         shutil.copytree(CORRECTED_DIR, corr_backup, dirs_exist_ok=True)
-        logger.info("Corrected files backed up successfully")
+        log_verbose("Corrected files backed up successfully")
     
     return backup_dir
 
@@ -584,14 +584,14 @@ def cleanup_old_backups(max_backups=5):
         return
     backup_dirs = sorted([d for d in os.listdir(backup_base_dir) if os.path.isdir(os.path.join(backup_base_dir, d))])
     if len(backup_dirs) > max_backups:
-        logger.info(f"Cleaning up old backups. Keeping {max_backups} most recent backups.")
+        log_verbose(f"Cleaning up old backups. Keeping {max_backups} most recent backups.")
         for old_dir in backup_dirs[:-max_backups]:
             shutil.rmtree(os.path.join(backup_base_dir, old_dir))
-            logger.info(f"Removed old backup: {old_dir}")
+            log_verbose(f"Removed old backup: {old_dir}")
 
 def cleanup_lock_files():
     """Clean up any remaining .lock or .correction.lock files by scanning directories."""
-    logger.info("Scanning for and removing orphaned lock files...")
+    log_verbose("Scanning for and removing orphaned lock files...")
     found_locks = 0
 
     # Scan for transcription locks (.lock) associated with files in AUDIO_DIR
@@ -604,7 +604,7 @@ def cleanup_lock_files():
                     if os.path.exists(lock_file_path):
                         try:
                             os.remove(lock_file_path)
-                            logger.info(f"Cleaned up orphaned transcription lock file: {lock_file_path}")
+                            log_verbose(f"Cleaned up orphaned transcription lock file: {lock_file_path}")
                             found_locks += 1
                         except Exception as e:
                             logger.error(f"Error cleaning up lock file {lock_file_path}: {e}")
@@ -619,7 +619,7 @@ def cleanup_lock_files():
                     if os.path.exists(lock_file_path):
                         try:
                             os.remove(lock_file_path)
-                            logger.info(f"Cleaned up orphaned correction lock file: {lock_file_path}")
+                            log_verbose(f"Cleaned up orphaned correction lock file: {lock_file_path}")
                             found_locks += 1
                         except Exception as e:
                             logger.error(f"Error cleaning up lock file {lock_file_path}: {e}")
@@ -752,11 +752,11 @@ def correct_file(args):
     lock_file = trans_path + ".correction.lock"
 
     if os.path.exists(lock_file):
-        logger.info(f"Skipping correction for {trans_path}: lock file exists.")
+        log_verbose(f"Skipping correction for {trans_path}: lock file exists.")
         return
 
     if os.path.exists(corrected_path):
-        logger.info(f"Skipping correction for {trans_path}: corrected file already exists.")
+        log_verbose(f"Skipping correction for {trans_path}: corrected file already exists.")
         return
     
     if not is_valid_transcription(trans_path):
@@ -929,7 +929,7 @@ def calculate_conservative_batch_size(device: str) -> int:
             else:
                 batch_size = min(MAX_BATCH_SIZE, 4)
             
-            logger.info(f"Performance mode: {PERFORMANCE_MODE} | Available: {available_memory_mb}MB | "
+            log_verbose(f"Performance mode: {PERFORMANCE_MODE} | Available: {available_memory_mb}MB | "
                        f"Safe memory: {safe_memory:.0f}MB | Batch size: {batch_size}")
             
             return batch_size
@@ -955,28 +955,32 @@ def select_best_gpu():
         
         for gpu in gpus:
             available = gpu.memoryTotal - gpu.memoryUsed
-            logger.info(f"GPU {gpu.id}: {available}MB available out of {gpu.memoryTotal}MB total")
+            log_verbose(f"GPU {gpu.id}: {available}MB available out of {gpu.memoryTotal}MB total")
             if available > max_available:
                 max_available = available
                 best_gpu = gpu.id
                 
-        logger.info(f"Selected GPU {best_gpu} with {max_available}MB available memory")
+        log_verbose(f"Selected GPU {best_gpu} with {max_available}MB available memory")
         return best_gpu
     except Exception as e:
         logger.warning(f"Error selecting best GPU: {e}, using GPU 0")
         return 0
 
-def process_transcription_batch(tasks):
+def process_transcription_batch(tasks_and_verbose):
     """Process a batch of transcription tasks in parallel with optimized VRAM utilization."""
+    tasks, verbose_flag = tasks_and_verbose
+    global verbose_logging
+    verbose_logging = verbose_flag
+    
     process_id = os.getpid()
     try:
         # Get initial resources
         initial_resources = get_system_resources()
-        logger.info(f"Process {process_id}: Initial resources - CPU: {initial_resources['cpu_percent']}%, "
+        log_verbose(f"Process {process_id}: Initial resources - CPU: {initial_resources['cpu_percent']}%, "
                    f"Memory: {initial_resources['memory_percent']}%")
         if initial_resources['gpu_info']:
             gpu = initial_resources['gpu_info'][0]
-            logger.info(f"Process {process_id}: GPU Memory: {gpu['memory_used']}MB/{gpu['memory_total']}MB used")
+            log_verbose(f"Process {process_id}: GPU Memory: {gpu['memory_used']}MB/{gpu['memory_total']}MB used")
         
         # Process the entire batch using optimized batch transcription
         start_time = time.time()
@@ -988,14 +992,14 @@ def process_transcription_batch(tasks):
         batch_time = end_time - start_time
         files_per_second = len(tasks) / batch_time if batch_time > 0 else 0
         
-        logger.info(f"Process {process_id}: Batch of {len(tasks)} files completed in {batch_time:.2f}s "
+        log_verbose(f"Process {process_id}: Batch of {len(tasks)} files completed in {batch_time:.2f}s "
                    f"({files_per_second:.2f} files/sec). Success: {successful}, Failed: {failed}")
-        logger.info(f"Process {process_id}: Current resources - CPU: {current_resources['cpu_percent']}%, "
+        log_verbose(f"Process {process_id}: Current resources - CPU: {current_resources['cpu_percent']}%, "
                    f"Memory: {current_resources['memory_percent']}%")
         
         if current_resources['gpu_info']:
             gpu = current_resources['gpu_info'][0]
-            logger.info(f"Process {process_id}: GPU Memory: {gpu['memory_used']}MB/{gpu['memory_total']}MB used")
+            log_verbose(f"Process {process_id}: GPU Memory: {gpu['memory_used']}MB/{gpu['memory_total']}MB used")
             
     except Exception as e:
         logger.error(f"Process {process_id}: Error in transcription batch: {e}")
@@ -1005,11 +1009,11 @@ def process_transcription_batch(tasks):
         
         # Log final resources
         final_resources = get_system_resources()
-        logger.info(f"Process {process_id}: Final resources - CPU: {final_resources['cpu_percent']}%, "
+        log_verbose(f"Process {process_id}: Final resources - CPU: {final_resources['cpu_percent']}%, "
                    f"Memory: {final_resources['memory_percent']}%")
         if final_resources['gpu_info']:
             gpu = final_resources['gpu_info'][0]
-            logger.info(f"Process {process_id}: Final GPU Memory: {gpu['memory_used']}MB/{gpu['memory_total']}MB used")
+            log_verbose(f"Process {process_id}: Final GPU Memory: {gpu['memory_used']}MB/{gpu['memory_total']}MB used")
 
 def split_tasks_into_batches(tasks, batch_size=4):
     """Split tasks into batches for parallel processing."""
@@ -1018,7 +1022,7 @@ def split_tasks_into_batches(tasks, batch_size=4):
 def transcribe_files_batch(file_batch):
     """Optimized batch transcription supporting both faster-whisper and transformers backends."""
     process_id = os.getpid()
-    logger.info(f"Process {process_id}: Starting optimized batch transcription of {len(file_batch)} files")
+    log_verbose(f"Process {process_id}: Starting optimized batch transcription of {len(file_batch)} files")
     
     # Initialize Whisper for this process if not already done
     initialize_whisper()
@@ -1043,7 +1047,7 @@ def transcribe_files_batch(file_batch):
             device = model_cache['device']
             backend = model_cache.get('backend', 'transformers')
             
-            logger.info(f"Process {process_id}: Using {backend} backend for transcription")
+            log_verbose(f"Process {process_id}: Using {backend} backend for transcription")
             
             if backend == 'faster-whisper':
                 successful, failed = _transcribe_batch_faster_whisper(file_batch, pipeline, device)
@@ -1057,7 +1061,7 @@ def transcribe_files_batch(file_batch):
         logger.error(f"Process {process_id}: Critical error in batch transcription: {e}")
         raise
     
-    logger.info(f"Process {process_id}: Batch completed - {successful_transcriptions} successful, {failed_transcriptions} failed")
+    log_verbose(f"Process {process_id}: Batch completed - {successful_transcriptions} successful, {failed_transcriptions} failed")
     return successful_transcriptions, failed_transcriptions
 
 def _transcribe_batch_faster_whisper(file_batch, model, device):
@@ -1271,6 +1275,13 @@ def main(num_workers_arg, batch_size_arg, analyze_performance_arg=False, verbose
             logger.setLevel(logging.DEBUG)
         else:
             console_handler.setLevel(logging.WARNING)  # Only show warnings and errors by default
+            
+            # Suppress third-party warnings in non-verbose mode
+            import warnings
+            warnings.filterwarnings("ignore", category=FutureWarning)
+            warnings.filterwarnings("ignore", message=".*The input name.*deprecated.*")
+            warnings.filterwarnings("ignore", message=".*Due to a bug fix.*")
+            warnings.filterwarnings("ignore", message=".*The attention mask is not set.*")
     
     log_verbose("Initializing directories...")
     ensure_dir(AUDIO_DIR)
@@ -1355,7 +1366,7 @@ def main(num_workers_arg, batch_size_arg, analyze_performance_arg=False, verbose
                 
                 try:
                     with ProcessPoolExecutor(max_workers=num_processes) as executor:
-                        futures = {executor.submit(process_transcription_batch, batch) for batch in task_batches}
+                        futures = {executor.submit(process_transcription_batch, (batch, verbose_logging)) for batch in task_batches}
                         with tqdm(total=len(trans_tasks), desc="Overall Transcription Progress", position=0, leave=True, 
                                  bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]') as pbar:
                             for future in as_completed(futures):
