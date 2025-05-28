@@ -4,7 +4,7 @@ import shutil
 import logging
 from multiprocessing import Pool, set_start_method
 import multiprocessing
-import requests # For Ollama API calls
+import requests
 import time
 from pathlib import Path
 import signal
@@ -12,82 +12,39 @@ import sys
 from datetime import datetime, timedelta
 import torch
 from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
-from torch.cuda.amp import autocast  # Added for automatic mixed precision
+from torch.cuda.amp import autocast
 from config import (
     OLLAMA_MODEL, CORRECTION_PROMPT, OLLAMA_API_URL, OLLAMA_OPTIONS,
-    GPU_MEMORY_FRACTION, CONSERVATIVE_BATCH_SIZING, ENABLE_MIXED_PRECISION, 
-    SMART_GPU_SELECTION, DEFAULT_CHUNK_LENGTH, MIN_CHUNK_LENGTH, MAX_CHUNK_LENGTH,
-    MEMORY_SAFETY_FACTOR, MAX_BATCH_SIZE, PERFORMANCE_MODE,
-    ENABLE_TORCH_COMPILE, TORCH_COMPILE_MODE, TORCH_COMPILE_FULLGRAPH, 
-    ATTENTION_IMPLEMENTATION, ENABLE_FLASH_ATTENTION, ENABLE_SDPA
+    GPU_MEMORY_FRACTION, ENABLE_MIXED_PRECISION, DEFAULT_CHUNK_LENGTH,
+    MIN_CHUNK_LENGTH, MAX_CHUNK_LENGTH, MAX_BATCH_SIZE
 )
 from tqdm import tqdm
 import re
 import psutil
 import GPUtil
-from concurrent.futures import ProcessPoolExecutor, as_completed, CancelledError
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import threading
-import argparse # Added argparse
-
-# Try to import flash-attn
-try:
-    import flash_attn
-    FLASH_ATTENTION_AVAILABLE = True
-except ImportError:
-    FLASH_ATTENTION_AVAILABLE = False
-
-# Import advanced performance monitoring
-try:
-    from advanced_performance_monitor import (
-        start_performance_monitoring, 
-        stop_performance_monitoring,
-        log_transcription_start, 
-        log_transcription_complete,
-        get_performance_summary,
-        export_performance_metrics
-    )
-    PERFORMANCE_MONITORING_AVAILABLE = True
-except ImportError:
-    PERFORMANCE_MONITORING_AVAILABLE = False
+import argparse
 
 # Global shutdown event
 shutdown_event = threading.Event()
 
-def is_wsl():
-    """Check if running in WSL (Windows Subsystem for Linux)."""
-    try:
-        with open('/proc/version', 'r') as f:
-            return 'microsoft' in f.read().lower() or 'wsl' in f.read().lower()
-    except:
-        return False
-
-def force_exit_wsl():
-    """Force exit in WSL by killing the process tree."""
-    if is_wsl():
-        try:
-            # In WSL, try to kill the entire process tree
-            os.system(f"pkill -f {os.path.basename(__file__)}")
-        except:
-            pass
-
 # --- START: Configuration ---
-# Original Configuration variables
 AUDIO_DIR = "audio"
 TRANSCRIPTIONS_DIR = "transcriptions"
 CORRECTED_DIR = "corrected"
 LOG_DIR = "logs"
 LOG_FILE = os.path.join(LOG_DIR, "transcription_errors.log")
 MIN_CHARS = 50
-MAX_RETRIES = 3 # For Whisper transcription
+MAX_RETRIES = 3
 WHISPER_MODEL = "openai/whisper-large-v3-turbo"
-CHECK_INTERVAL = 300  # Seconds between processing cycles
+CHECK_INTERVAL = 300
 # --- END: Configuration ---
 
 # Set multiprocessing start method to 'spawn' for CUDA compatibility
 try:
     set_start_method('spawn')
 except RuntimeError:
-    # Method may have been set already
     pass
 
 # Set up logging
@@ -110,7 +67,7 @@ logger.setLevel(logging.INFO)
 logger.addHandler(file_handler)
 logger.addHandler(console_handler)
 
-# Global flag for verbose logging (will be set by command line argument)
+# Global flag for verbose logging
 verbose_logging = False
 
 def log_verbose(message, level=logging.INFO):
@@ -120,25 +77,13 @@ def log_verbose(message, level=logging.INFO):
 
 def log_essential(message, level=logging.INFO):
     """Log essential messages that should always be shown."""
-    # Always log at INFO level, but use print for non-verbose mode to avoid timestamp clutter
     if verbose_logging:
         logger.log(level, message)
     else:
         if level >= logging.WARNING:
-            logger.log(level, message)  # Always show warnings and errors
+            logger.log(level, message)
         else:
-            print(message)  # Essential info without timestamp
-
-# Log import status after logger is configured (verbose only)
-if FLASH_ATTENTION_AVAILABLE:
-    log_verbose("✓ Flash Attention 2 available")
-else:
-    log_verbose("⚠ Flash Attention not available. Install with: pip install flash-attn", logging.WARNING)
-
-if PERFORMANCE_MONITORING_AVAILABLE:
-    log_verbose("✓ Advanced performance monitoring available")
-else:
-    log_verbose("⚠ Advanced performance monitoring not available", logging.WARNING)
+            print(message)
 
 # Global variables for model caching
 model_cache = {
@@ -150,14 +95,25 @@ model_cache = {
     'lock': threading.Lock()
 }
 
-# Global flag to track if performance analysis has been done
-performance_analysis_done = False
-
-# Global flag for performance analysis (set by command line argument)
-analyze_performance = False
-
 MODEL_CACHE_TIMEOUT = 3600  # 60 minutes
 MIN_MEMORY_THRESHOLD = 0.8  # 80% memory usage threshold
+
+def is_wsl():
+    """Check if running in WSL (Windows Subsystem for Linux)."""
+    try:
+        with open('/proc/version', 'r') as f:
+            return 'microsoft' in f.read().lower() or 'wsl' in f.read().lower()
+    except:
+        return False
+
+def force_exit_wsl():
+    """Force exit in WSL by killing the process tree."""
+    if is_wsl():
+        try:
+            # In WSL, try to kill the entire process tree
+            os.system(f"pkill -f {os.path.basename(__file__)}")
+        except:
+            pass
 
 def log_performance_analysis_during_transcription():
     """Log performance analysis during active transcription when GPU is actually being used."""
