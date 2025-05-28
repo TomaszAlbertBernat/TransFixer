@@ -18,10 +18,8 @@ from config import (
     GPU_MEMORY_FRACTION, CONSERVATIVE_BATCH_SIZING, ENABLE_MIXED_PRECISION, 
     SMART_GPU_SELECTION, DEFAULT_CHUNK_LENGTH, MIN_CHUNK_LENGTH, MAX_CHUNK_LENGTH,
     MEMORY_SAFETY_FACTOR, MAX_BATCH_SIZE, PERFORMANCE_MODE,
-    USE_FASTER_WHISPER_BACKEND, FASTER_WHISPER_MODEL, ENABLE_TORCH_COMPILE,
-    TORCH_COMPILE_MODE, TORCH_COMPILE_FULLGRAPH, ATTENTION_IMPLEMENTATION,
-    ENABLE_FLASH_ATTENTION, ENABLE_SDPA, CTRANSLATE2_COMPUTE_TYPE, 
-    ENABLE_VAD_FILTER, VAD_PARAMETERS
+    ENABLE_TORCH_COMPILE, TORCH_COMPILE_MODE, TORCH_COMPILE_FULLGRAPH, 
+    ATTENTION_IMPLEMENTATION, ENABLE_FLASH_ATTENTION, ENABLE_SDPA
 )
 from tqdm import tqdm
 import re
@@ -30,13 +28,6 @@ import GPUtil
 from concurrent.futures import ProcessPoolExecutor, as_completed, CancelledError
 import threading
 import argparse # Added argparse
-
-# Import faster-whisper for CTranslate2 optimizations
-try:
-    from faster_whisper import WhisperModel as FasterWhisperModel, BatchedInferencePipeline
-    FASTER_WHISPER_AVAILABLE = True
-except ImportError:
-    FASTER_WHISPER_AVAILABLE = False
 
 # Try to import flash-attn
 try:
@@ -88,7 +79,7 @@ LOG_DIR = "logs"
 LOG_FILE = os.path.join(LOG_DIR, "transcription_errors.log")
 MIN_CHARS = 50
 MAX_RETRIES = 3 # For Whisper transcription
-WHISPER_MODEL = "openai/whisper-large-v3-turbo" # Changed from v3-turbo as it might not be a standard HF identifier without API key logic
+WHISPER_MODEL = "openai/whisper-large-v3-turbo"
 CHECK_INTERVAL = 300  # Seconds between processing cycles
 # --- END: Configuration ---
 
@@ -139,11 +130,6 @@ def log_essential(message, level=logging.INFO):
             print(message)  # Essential info without timestamp
 
 # Log import status after logger is configured (verbose only)
-if FASTER_WHISPER_AVAILABLE:
-    log_verbose("✓ faster-whisper available for CTranslate2 optimizations")
-else:
-    log_verbose("⚠ faster-whisper not available. Install with: pip install faster-whisper", logging.WARNING)
-
 if FLASH_ATTENTION_AVAILABLE:
     log_verbose("✓ Flash Attention 2 available")
 else:
@@ -290,7 +276,7 @@ def is_model_cache_valid():
     return True
 
 def initialize_whisper():
-    """Initialize Whisper model with optimized backend selection and latest performance optimizations."""
+    """Initialize Whisper model with optimized settings."""
     global model_cache
     
     # Check if we can use the cached model
@@ -301,88 +287,7 @@ def initialize_whisper():
             return
     
     process_id = os.getpid()
-    
-    # Choose optimal backend
-    if USE_FASTER_WHISPER_BACKEND and FASTER_WHISPER_AVAILABLE:
-        log_verbose(f"Process {process_id}: Using faster-whisper backend (CTranslate2) for maximum performance")
-        _initialize_faster_whisper()
-    else:
-        log_verbose(f"Process {process_id}: Using transformers backend")
-        _initialize_transformers_whisper()
-
-def _initialize_faster_whisper():
-    """Initialize with faster-whisper backend (CTranslate2) - RECOMMENDED for performance"""
-    global model_cache
-    process_id = os.getpid()
-    
-    # Smart GPU selection
-    if torch.cuda.is_available():
-        gpu_count = torch.cuda.device_count()
-        if gpu_count > 1:
-            best_gpu = select_best_gpu()
-            device = f"cuda:{best_gpu}" if best_gpu is not None else "cuda:0"
-            device_index = best_gpu if best_gpu is not None else 0
-        else:
-            device = "cuda:0"
-            device_index = 0
-        log_verbose(f"Process {process_id}: Using faster-whisper with {device}")
-    else:
-        device = "cpu"
-        device_index = None
-        log_verbose(f"Process {process_id}: Using faster-whisper with CPU")
-
-    try:
-        with model_cache['lock']:
-            log_verbose(f"Process {process_id}: Loading faster-whisper model {FASTER_WHISPER_MODEL}...")
-            
-            # Initialize faster-whisper model with optimizations
-            model = FasterWhisperModel(
-                FASTER_WHISPER_MODEL,
-                device=device,
-                device_index=device_index,
-                compute_type=CTRANSLATE2_COMPUTE_TYPE,
-                cpu_threads=0,  # Use all available threads
-                num_workers=1,  # Single worker for now
-            )
-            
-            log_verbose(f"Process {process_id}: faster-whisper model loaded successfully")
-            
-            # Get optimal batch size for CTranslate2
-            optimal_batch_size = calculate_conservative_batch_size(device)
-            
-            # Create batched pipeline for maximum performance
-            if hasattr(model, 'model'):  # Check if we can create batched pipeline
-                try:
-                    batched_pipeline = BatchedInferencePipeline(model=model)
-                    log_verbose(f"Process {process_id}: Batched inference pipeline created")
-                except Exception as e:
-                    logger.warning(f"Process {process_id}: Could not create batched pipeline: {e}")
-                    batched_pipeline = model
-            else:
-                batched_pipeline = model
-            
-            # Update cache
-            model_cache.update({
-                'model': model,
-                'processor': None,  # Not used with faster-whisper
-                'pipeline': batched_pipeline,
-                'last_used': datetime.now(),
-                'device': device,
-                'backend': 'faster-whisper'
-            })
-            
-            log_verbose(f"Process {process_id}: faster-whisper initialization complete")
-            
-    except Exception as e:
-        logger.error(f"Process {process_id}: Error initializing faster-whisper: {e}")
-        # Fallback to transformers
-        log_verbose(f"Process {process_id}: Falling back to transformers backend")
-        _initialize_transformers_whisper()
-
-def _initialize_transformers_whisper():
-    """Initialize with transformers backend with all optimizations enabled"""
-    global model_cache
-    process_id = os.getpid()
+    log_verbose(f"Process {process_id}: Initializing Whisper model")
     
     # Smart GPU selection based on available memory
     if torch.cuda.is_available():
@@ -498,12 +403,11 @@ def _initialize_transformers_whisper():
                 'processor': processor,
                 'pipeline': whisper_pipeline,
                 'last_used': datetime.now(),
-                'device': device,
-                'backend': 'transformers'
+                'device': device
             })
             
     except Exception as e:
-        logger.error(f"Process {process_id}: Error initializing transformers Whisper: {e}")
+        logger.error(f"Process {process_id}: Error initializing Whisper: {e}")
         cleanup_whisper()
         raise
 
@@ -966,14 +870,37 @@ def select_best_gpu():
         logger.warning(f"Error selecting best GPU: {e}, using GPU 0")
         return 0
 
-def process_transcription_batch(tasks_and_verbose):
+def process_transcription_batch(tasks_and_config):
     """Process a batch of transcription tasks in parallel with optimized VRAM utilization."""
-    tasks, verbose_flag = tasks_and_verbose
+    tasks, verbose_flag = tasks_and_config
     global verbose_logging
     verbose_logging = verbose_flag
     
     process_id = os.getpid()
+    log_verbose(f"Process {process_id}: Starting batch processing")
+    
     try:
+        # Check CUDA availability and initialize
+        if torch.cuda.is_available():
+            try:
+                # Select best GPU for this process
+                best_gpu = select_best_gpu()
+                if best_gpu is not None:
+                    torch.cuda.set_device(best_gpu)
+                
+                # Test CUDA initialization
+                test_tensor = torch.randn(1, 1, 4, 4, device='cuda')
+                del test_tensor
+                torch.cuda.empty_cache()
+                log_verbose(f"Process {process_id}: CUDA initialized successfully")
+            except Exception as cuda_error:
+                logger.error(f"Process {process_id}: CUDA initialization failed: {cuda_error}")
+                # Fall back to CPU
+                os.environ['CUDA_VISIBLE_DEVICES'] = ''
+                log_verbose(f"Process {process_id}: Falling back to CPU mode")
+        else:
+            log_verbose(f"Process {process_id}: CUDA not available, using CPU")
+        
         # Get initial resources
         initial_resources = get_system_resources()
         log_verbose(f"Process {process_id}: Initial resources - CPU: {initial_resources['cpu_percent']}%, "
@@ -1002,27 +929,37 @@ def process_transcription_batch(tasks_and_verbose):
             log_verbose(f"Process {process_id}: GPU Memory: {gpu['memory_used']}MB/{gpu['memory_total']}MB used")
             
     except Exception as e:
-        logger.error(f"Process {process_id}: Error in transcription batch: {e}")
+        logger.error(f"Process {process_id}: Critical error in transcription batch: {e}")
+        # Log the full traceback for debugging
+        import traceback
+        logger.error(f"Process {process_id}: Traceback:\n{traceback.format_exc()}")
+        raise
     finally:
         # Clean up Whisper resources for this process
-        cleanup_whisper()
+        try:
+            cleanup_whisper()
+        except Exception as cleanup_error:
+            logger.error(f"Process {process_id}: Error during cleanup: {cleanup_error}")
         
         # Log final resources
-        final_resources = get_system_resources()
-        log_verbose(f"Process {process_id}: Final resources - CPU: {final_resources['cpu_percent']}%, "
-                   f"Memory: {final_resources['memory_percent']}%")
-        if final_resources['gpu_info']:
-            gpu = final_resources['gpu_info'][0]
-            log_verbose(f"Process {process_id}: Final GPU Memory: {gpu['memory_used']}MB/{gpu['memory_total']}MB used")
+        try:
+            final_resources = get_system_resources()
+            log_verbose(f"Process {process_id}: Final resources - CPU: {final_resources['cpu_percent']}%, "
+                       f"Memory: {final_resources['memory_percent']}%")
+            if final_resources['gpu_info']:
+                gpu = final_resources['gpu_info'][0]
+                log_verbose(f"Process {process_id}: Final GPU Memory: {gpu['memory_used']}MB/{gpu['memory_total']}MB used")
+        except Exception as resource_error:
+            logger.error(f"Process {process_id}: Error getting final resources: {resource_error}")
 
 def split_tasks_into_batches(tasks, batch_size=4):
     """Split tasks into batches for parallel processing."""
     return [tasks[i:i + batch_size] for i in range(0, len(tasks), batch_size)]
 
 def transcribe_files_batch(file_batch):
-    """Optimized batch transcription supporting both faster-whisper and transformers backends."""
+    """Optimized batch transcription using transformers pipeline."""
     process_id = os.getpid()
-    log_verbose(f"Process {process_id}: Starting optimized batch transcription of {len(file_batch)} files")
+    log_verbose(f"Process {process_id}: Starting batch transcription of {len(file_batch)} files")
     
     # Initialize Whisper for this process if not already done
     initialize_whisper()
@@ -1045,15 +982,10 @@ def transcribe_files_batch(file_batch):
         with model_cache['lock']:
             pipeline = model_cache['pipeline']
             device = model_cache['device']
-            backend = model_cache.get('backend', 'transformers')
             
-            log_verbose(f"Process {process_id}: Using {backend} backend for transcription")
+            log_verbose(f"Process {process_id}: Using transformers pipeline for transcription")
             
-            if backend == 'faster-whisper':
-                successful, failed = _transcribe_batch_faster_whisper(file_batch, pipeline, device)
-            else:
-                successful, failed = _transcribe_batch_transformers(file_batch, pipeline, device)
-                
+            successful, failed = _transcribe_batch_transformers(file_batch, pipeline, device)
             successful_transcriptions += successful
             failed_transcriptions += failed
             
@@ -1063,86 +995,6 @@ def transcribe_files_batch(file_batch):
     
     log_verbose(f"Process {process_id}: Batch completed - {successful_transcriptions} successful, {failed_transcriptions} failed")
     return successful_transcriptions, failed_transcriptions
-
-def _transcribe_batch_faster_whisper(file_batch, model, device):
-    """Optimized transcription using faster-whisper backend"""
-    process_id = os.getpid()
-    successful = 0
-    failed = 0
-    
-    for audio_path, trans_path in file_batch:
-        lock_file = audio_path + ".lock"
-        
-        if os.path.exists(lock_file) or (os.path.exists(trans_path) and is_valid_transcription(trans_path)):
-            continue
-        
-        try:
-            Path(lock_file).touch()
-        except Exception as e:
-            logger.error(f"Error creating lock file for {audio_path}: {e}")
-            continue
-            
-        try:
-            log_essential(f"🎧 Transcribing: {os.path.basename(audio_path)}")
-            
-            # Use faster-whisper transcribe method
-            transcribe_options = {
-                "beam_size": 5,
-                "best_of": 5,
-                "temperature": 0.0,
-                "condition_on_previous_text": False,
-                "compression_ratio_threshold": 2.4,
-                "log_prob_threshold": -1.0,
-                "no_speech_threshold": 0.6,
-                "length_penalty": 1.0,
-                "repetition_penalty": 1.0,
-                "no_repeat_ngram_size": 0,
-                "prompt_reset_on_temperature": 0.5,
-                "decode_options": {},
-                "clip_timestamps": "0",
-                "hallucination_silence_threshold": None,
-            }
-            
-            # Add VAD filter if enabled
-            if ENABLE_VAD_FILTER:
-                transcribe_options.update({
-                    "vad_filter": True,
-                    "vad_parameters": VAD_PARAMETERS
-                })
-            
-            # Perform transcription
-            segments, info = model.transcribe(audio_path, **transcribe_options)
-            
-            # Extract text from segments
-            transcription_text = []
-            for segment in segments:
-                transcription_text.append(segment.text)
-            
-            transcription = " ".join(transcription_text)
-            
-            # Ensure directory exists and write transcription
-            ensure_dir(os.path.dirname(trans_path))
-            with open(trans_path, "w", encoding="utf-8") as f:
-                f.write(transcription)
-            
-            if is_valid_transcription(trans_path):
-                log_verbose(f"✅ Successfully transcribed {os.path.basename(audio_path)}")
-                successful += 1
-            else:
-                logger.warning(f"⚠️ Transcription too short for {os.path.basename(audio_path)}")
-                failed += 1
-                
-        except Exception as e:
-            logger.error(f"Error transcribing {audio_path}: {e}")
-            failed += 1
-        finally:
-            try:
-                if os.path.exists(lock_file):
-                    os.remove(lock_file)
-            except Exception as e:
-                logger.error(f"Error removing lock file for {audio_path}: {e}")
-    
-    return successful, failed
 
 def _transcribe_batch_transformers(file_batch, pipeline, device):
     """Optimized transcription using transformers backend with mixed precision"""
@@ -1234,15 +1086,17 @@ def preload_and_optimize_model():
                                 log_verbose("Scaled dot product attention available - model should use optimized attention")
                             
                             # Enable torch compile if available (PyTorch 2.0+)
-                            if hasattr(torch, 'compile'):
+                            if ENABLE_TORCH_COMPILE and hasattr(torch, 'compile'):
                                 log_verbose("Enabling PyTorch compile for maximum performance")
                                 try:
+                                    model = model_cache['model']  # Get model from cache
                                     # Enable static cache for torch.compile compatibility
                                     if hasattr(model, 'generation_config'):
                                         model.generation_config.cache_implementation = "static"
                                     
                                     # Apply torch.compile with optimal settings
-                                    model = torch.compile(model, mode="reduce-overhead", fullgraph=True)
+                                    compiled_model = torch.compile(model, mode="reduce-overhead", fullgraph=True)
+                                    model_cache['model'] = compiled_model  # Update cache with compiled model
                                     log_verbose("✓ Torch compile enabled - expect 4.5x speed improvement")
                                 except Exception as e:
                                     logger.warning(f"Torch compile failed: {e}")
@@ -1257,226 +1111,135 @@ def preload_and_optimize_model():
         logger.error(f"Error during model preloading and optimization: {e}")
         return False
 
-def main(num_workers_arg, batch_size_arg, analyze_performance_arg=False, verbose_logging_arg=False):
-    global analyze_performance, verbose_logging
+def main(num_workers_arg, batch_size_arg, analyze_performance_arg=False, verbose_logging_arg=False, model_arg=None, force_cpu_arg=False):
+    global analyze_performance, verbose_logging, WHISPER_MODEL
     analyze_performance = analyze_performance_arg
     verbose_logging = verbose_logging_arg
     
-    # Set console handler level based on verbose flag
-    console_handler = None
-    for handler in logger.handlers:
-        if isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler):
-            console_handler = handler
-            break
-    
-    if console_handler:
-        if verbose_logging:
-            console_handler.setLevel(logging.DEBUG)
-            logger.setLevel(logging.DEBUG)
+    # Override configuration with command line arguments
+    if model_arg:
+        # Handle both short names and full HF names
+        if "/" not in model_arg:
+            # Convert short names to full HF names
+            model_mapping = {
+                "tiny": "openai/whisper-tiny",
+                "base": "openai/whisper-base", 
+                "small": "openai/whisper-small",
+                "medium": "openai/whisper-medium",
+                "large": "openai/whisper-large",
+                "large-v2": "openai/whisper-large-v2",
+                "large-v3": "openai/whisper-large-v3",
+                "turbo": "openai/whisper-large-v3-turbo",
+                "distil-large-v3": "distil-whisper/distil-large-v3",
+                "distil-medium.en": "distil-whisper/distil-medium.en"
+            }
+            WHISPER_MODEL = model_mapping.get(model_arg, model_arg)
         else:
-            console_handler.setLevel(logging.WARNING)  # Only show warnings and errors by default
-            
-            # Suppress third-party warnings in non-verbose mode
-            import warnings
-            warnings.filterwarnings("ignore", category=FutureWarning)
-            warnings.filterwarnings("ignore", message=".*The input name.*deprecated.*")
-            warnings.filterwarnings("ignore", message=".*Due to a bug fix.*")
-            warnings.filterwarnings("ignore", message=".*The attention mask is not set.*")
+            WHISPER_MODEL = model_arg
+        log_verbose(f"Model overridden via command line: {WHISPER_MODEL}")
     
-    log_verbose("Initializing directories...")
+    # Handle force CPU option
+    if force_cpu_arg:
+        log_essential("🔧 Force CPU mode enabled - disabling CUDA operations")
+        # Temporarily disable CUDA for this run
+        import os
+        os.environ['CUDA_VISIBLE_DEVICES'] = ''
+        # Also disable cuDNN
+        os.environ['CUDNN_ENABLED'] = '0'
+
+    # Create required directories
     ensure_dir(AUDIO_DIR)
     ensure_dir(TRANSCRIPTIONS_DIR)
     ensure_dir(CORRECTED_DIR)
-    ensure_dir("backup")
-    
-    if not OLLAMA_MODEL or not CORRECTION_PROMPT:
-        logger.error("OLLAMA_MODEL and CORRECTION_PROMPT must be set in the configuration.")
-        sys.exit(1)
+    ensure_dir(LOG_DIR)
 
-    log_essential(f"🤖 Using Ollama model: {OLLAMA_MODEL}")
-    
-    # Log initial performance analysis (one-time)
-    if PERFORMANCE_MONITORING_AVAILABLE and analyze_performance:
-        log_verbose("✓ Advanced performance monitoring available (logging initial analysis only)")
-    elif PERFORMANCE_MONITORING_AVAILABLE and not analyze_performance:
-        log_verbose("ℹ️ Advanced performance monitoring available but disabled (use --analyze-performance to enable)")
-    
-    # Log optimization settings (verbose only)
-    if verbose_logging:
-        logger.info("="*60)
-        logger.info("TRANSFIXER OPTIMIZATIONS ENABLED:")
-        logger.info("="*60)
-        
-        # Display performance mode
-        from config import get_performance_summary
-        perf_summary = get_performance_summary()
-        logger.info(f"🚀 Performance Mode: {perf_summary['mode'].upper()}")
-        logger.info(f"🎮 GPU Memory Usage: {perf_summary['gpu_memory_fraction']} (Safety Factor: {perf_summary['memory_safety_factor']})")
-        logger.info(f"📦 Max Batch Size: {perf_summary['max_batch_size']}")
-        logger.info(f"⏱️  Audio Chunk Length: {perf_summary['default_chunk_length']} (Range: {perf_summary['chunk_length_range']})")
-        
-        if ENABLE_MIXED_PRECISION:
-            logger.info("✓ Automatic Mixed Precision (AMP) enabled for faster inference")
-        if SMART_GPU_SELECTION:
-            logger.info("✓ Smart GPU selection based on available memory")
-        if perf_summary['aggressive_batching']:
-            logger.info("✓ Aggressive batching enabled for maximum throughput")
-        else:
-            logger.info("✓ Conservative batch sizing to prevent OOM errors")
-        logger.info("="*60)
-    
-    # Preload and optimize the Whisper model for maximum performance
-    log_essential("🔄 Loading Whisper model...")
+    # Preload and optimize the model
     if not preload_and_optimize_model():
-        logger.warning("Model preloading failed, but continuing with standard initialization")
-    else:
-        resources = get_system_resources()
-        if resources['gpu_info']:
-            gpu = resources['gpu_info'][0]
-            vram_usage_percent = (gpu['memory_used'] / gpu['memory_total']) * 100
-            log_essential(f"✅ Model loaded! Using {vram_usage_percent:.1f}% GPU memory")
-            log_verbose(f"Memory details: {gpu['memory_used']}MB/{gpu['memory_total']}MB")
-    
-    # Performance analysis will be done during first transcription batch
+        logger.error("Failed to preload and optimize model. Exiting.")
+        return
 
-    try:
-        cycle_count = 0
-        while not shutdown_event.is_set():
-            cycle_count += 1
-            log_verbose("="*50)
-            log_verbose(f"Starting processing cycle #{cycle_count} at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-            log_verbose("="*50)
-            
-            if shutdown_event.is_set(): break
-            create_backup()
-            if shutdown_event.is_set(): break
-            cleanup_old_backups()
-            if shutdown_event.is_set(): break
+    # Main processing loop
+    while not shutdown_event.is_set():
+        try:
+            # Collect tasks
+            transcription_tasks = collect_transcription_tasks()
+            correction_tasks = collect_correction_tasks()
 
-            # Phase 1: Transcribe audio files
-            log_verbose("-" * 10 + " Phase 1: Transcription " + "-" * 10)
-            trans_tasks = collect_transcription_tasks()
-            if trans_tasks and not shutdown_event.is_set():
-                log_essential(f"📁 Found {len(trans_tasks)} files to transcribe")
-                resources = get_system_resources()
-                num_processes = num_workers_arg
-                batch_size = batch_size_arg
-                log_verbose(f"Using {num_processes} processes with batch size {batch_size}")
-                task_batches = split_tasks_into_batches(trans_tasks, batch_size)
+            if not transcription_tasks and not correction_tasks:
+                log_essential("No new tasks found. Waiting for new files...")
+                time.sleep(CHECK_INTERVAL)
+                continue
+
+            # Process transcription tasks
+            if transcription_tasks:
+                log_essential(f"Found {len(transcription_tasks)} files to transcribe")
                 
-                try:
-                    with ProcessPoolExecutor(max_workers=num_processes) as executor:
-                        futures = {executor.submit(process_transcription_batch, (batch, verbose_logging)) for batch in task_batches}
-                        with tqdm(total=len(trans_tasks), desc="Overall Transcription Progress", position=0, leave=True, 
-                                 bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]') as pbar:
-                            for future in as_completed(futures):
-                                if shutdown_event.is_set():
-                                    logger.info("Shutdown during transcription: cancelling pending tasks.")
-                                    for f_cancel in futures:
-                                        if not f_cancel.done(): 
-                                            f_cancel.cancel()
-                                    # Force shutdown the executor for WSL compatibility
-                                    executor.shutdown(wait=False)
-                                    break # Exit as_completed loop
+                # Split tasks into batches
+                task_batches = split_tasks_into_batches(transcription_tasks, batch_size_arg)
+                
+                # Process batches with multiprocessing
+                with ProcessPoolExecutor(max_workers=num_workers_arg) as executor:
+                    # Submit batches to workers
+                    futures = []
+                    for batch in task_batches:
+                        future = executor.submit(process_transcription_batch, (batch, verbose_logging))
+                        futures.append(future)
+                    
+                    # Wait for completion with retry logic
+                    failed_batches = []
+                    for future in as_completed(futures):
+                        try:
+                            future.result()
+                        except Exception as e:
+                            logger.error(f"Error in transcription batch: {e}")
+                            # Get the batch that failed
+                            batch_index = futures.index(future)
+                            failed_batches.append(task_batches[batch_index])
+                    
+                    # Retry failed batches with reduced batch size
+                    if failed_batches:
+                        logger.warning(f"Retrying {len(failed_batches)} failed batches with reduced batch size...")
+                        for batch in failed_batches:
+                            # Split failed batch into smaller chunks
+                            smaller_batches = split_tasks_into_batches(batch, max(1, batch_size_arg // 2))
+                            for small_batch in smaller_batches:
                                 try:
+                                    future = executor.submit(process_transcription_batch, (small_batch, verbose_logging))
                                     future.result()
-                                    pbar.update(len(task_batches[0]) if task_batches else 0) # Approx update based on first batch len or 0
-                                except CancelledError:
-                                    logger.info("A transcription batch was cancelled.")
-                                    pbar.update(len(task_batches[0]) if task_batches else 0)
-                                except Exception as e:
-                                    logger.error(f"Transcription batch failed: {e}")
-                        # End of tqdm block
-                        if shutdown_event.is_set():
-                            logger.info("Transcription phase interrupted by shutdown signal.")
-                            # Ensure futures are cancelled before executor.__exit__ (which calls shutdown)
-                            for f_cancel in futures:
-                                if not f_cancel.done(): f_cancel.cancel()
-                            # The 'with executor:' will call executor.shutdown(wait=True).
-                            # If tasks don't respond to cancellation, this will wait.
-                except Exception as e_exec:
-                    logger.error(f"Error with transcription executor: {e_exec}")
-                log_verbose("Transcription phase completed or interrupted.")
-            elif not trans_tasks:
-                log_verbose("No new audio files to transcribe")
+                                except Exception as retry_error:
+                                    logger.error(f"Retry failed for batch: {retry_error}")
+
+            # Process correction tasks
+            if correction_tasks:
+                log_essential(f"Found {len(correction_tasks)} files to correct")
+                
+                # Process corrections sequentially to avoid overwhelming Ollama
+                for task in correction_tasks:
+                    if shutdown_event.is_set():
+                        break
+                    correct_file(task)
+
+            # Create backup after processing
+            backup_dir = create_backup()
+            log_verbose(f"Created backup in {backup_dir}")
             
-            if shutdown_event.is_set(): break
+            # Clean up old backups
+            cleanup_old_backups()
 
-            # Phase 2: Correct transcriptions
-            log_verbose("-" * 10 + " Phase 2: Correction " + "-" * 10)
-            correct_tasks = collect_correction_tasks()
-            if correct_tasks and not shutdown_event.is_set():
-                log_essential(f"✏️  Found {len(correct_tasks)} transcriptions to correct")
-                try:
-                    with Pool(processes=1) as pool: # TODO: Parameterize correction workers
-                        async_results = []
-                        for task in correct_tasks:
-                            if shutdown_event.is_set():
-                                logger.info("Shutdown during correction task submission.")
-                                break
-                            async_results.append(pool.apply_async(correct_file, (task,)))
-                        
-                        if not shutdown_event.is_set():
-                            with tqdm(total=len(async_results), desc="Correction Progress", leave=False) as pbar:
-                                for res in async_results:
-                                    if shutdown_event.is_set():
-                                        logger.info("Shutdown while waiting for correction results. Terminating pool.")
-                                        pool.terminate()
-                                        break
-                                    try:
-                                        res.get(timeout=1) # Periodically check for shutdown
-                                        pbar.update(1)
-                                    except multiprocessing.TimeoutError:
-                                        continue # Still waiting, check shutdown_event next
-                                    except Exception as e:
-                                        logger.error(f"Correction task failed: {e}")
-                                        pbar.update(1) # Count as processed
-                        
-                        if shutdown_event.is_set():
-                            logger.info("Terminating correction pool due to shutdown signal.")
-                            pool.terminate()
-                            pool.join(timeout=10) # Wait a bit for termination
-                        else:
-                            pool.close()
-                            pool.join() # Normal shutdown
-                except Exception as e_pool:
-                    logger.error(f"Error with correction pool: {e_pool}")
-                log_verbose("Correction phase completed or interrupted.")
-            elif not correct_tasks:
-                log_verbose("No new transcriptions to correct")
+            # Wait before next check
+            time.sleep(CHECK_INTERVAL)
 
-            if shutdown_event.is_set():
-                log_verbose("Shutdown requested, breaking main loop before sleep.")
-                break
-            
-            log_verbose(f"Cycle complete. Sleeping for {CHECK_INTERVAL} seconds.")
-            # Sleep with frequent shutdown checks
-            for i in range(CHECK_INTERVAL):
-                if shutdown_event.is_set(): 
-                    log_verbose(f"Shutdown detected during sleep (after {i} seconds)")
-                    break
-                time.sleep(1)
+        except KeyboardInterrupt:
+            logger.info("KeyboardInterrupt received, initiating shutdown...")
+            shutdown_event.set()
+            break
+        except Exception as e:
+            logger.error(f"Error in main loop: {e}")
+            time.sleep(CHECK_INTERVAL)  # Wait before retrying
 
-        logger.info("Main processing loop finished or interrupted.")
-
-    except Exception as e:
-        logger.critical(f"Critical error in main loop: {e}", exc_info=True)
-        shutdown_event.set() # Ensure shutdown is signalled on other critical errors
-    finally:
-        logger.info("Main loop finally block reached.")
-        
-        # Clean up performance monitoring if it was started
-        if PERFORMANCE_MONITORING_AVAILABLE:
-            try:
-                logger.info("Cleaning up performance monitoring...")
-                stop_performance_monitoring()  # Just in case it was started elsewhere
-                logger.info("Performance monitoring cleanup complete")
-            except Exception as e:
-                logger.warning(f"Note: Performance monitoring cleanup: {e}")
-        
-        # Pools should be closed by their 'with' statements.
-        # This finally block is a safeguard or for other main-level resources if any.
-
+    # Final cleanup
+    cleanup_whisper()
+    cleanup_lock_files()
 
 if __name__ == "__main__":
     signal.signal(signal.SIGINT, signal_handler)
@@ -1490,7 +1253,49 @@ if __name__ == "__main__":
         parser.add_argument("--cleanup-locks", action="store_true", help="Remove all lock files and exit. Use this if transcription was interrupted.")
         parser.add_argument("--analyze-performance", action="store_true", help="Enable detailed performance analysis during transcription.")
         parser.add_argument("--verbose-logging", action="store_true", help="Enable verbose logging output. Default is minimal logging (only progress and current transcription).")
+        
+        # Model selection arguments
+        parser.add_argument("--model", type=str, default=None, 
+                          help="Whisper model to use. Options: 'tiny', 'base', 'small', 'medium', 'large', 'large-v2', 'large-v3', 'turbo', 'distil-large-v3', 'distil-medium.en' or full HuggingFace model names like 'openai/whisper-large-v3'")
+        parser.add_argument("--list-models", action="store_true", help="List available models and exit.")
+        parser.add_argument("--force-cpu", action="store_true", help="Force CPU-only mode (disable CUDA) - useful when CUDA/cuDNN has issues.")
+        
         args = parser.parse_args()
+        
+        # Handle list models option
+        if args.list_models:
+            print("🎯 Available Whisper Models:")
+            print("\n📊 TRANSFORMERS MODELS (HuggingFace):")
+            print("   Performance Models:")
+            print("   • tiny       - Fastest, lowest accuracy (39 MB)")
+            print("   • base       - Fast, basic accuracy (74 MB)")
+            print("   • small      - Balanced speed/accuracy (244 MB)")
+            print("   • medium     - Good accuracy, moderate speed (769 MB)")
+            print("   • large      - High accuracy (1550 MB)")
+            print("   • large-v2   - Improved accuracy (1550 MB)")
+            print("   • large-v3   - Best accuracy (1550 MB)")
+            print("   • turbo      - 8x faster than large-v3, similar to large-v2 accuracy")
+            print("   \n   Specialized Models:")
+            print("   • distil-large-v3    - 6x faster than large-v3, minimal accuracy loss")
+            print("   • distil-medium.en   - English-only, very fast")
+            print("\n🤗 Full HuggingFace Model Names:")
+            print("   • openai/whisper-tiny")
+            print("   • openai/whisper-base") 
+            print("   • openai/whisper-small")
+            print("   • openai/whisper-medium")
+            print("   • openai/whisper-large")
+            print("   • openai/whisper-large-v2")
+            print("   • openai/whisper-large-v3")
+            print("   • openai/whisper-large-v3-turbo")
+            print("   • distil-whisper/distil-large-v3")
+            print("   • distil-whisper/distil-medium.en")
+            print("\n💡 Usage Examples:")
+            print("   python transfixer.py --model large-v3")
+            print("   python transfixer.py --model turbo")
+            print("   python transfixer.py --model openai/whisper-large-v3")
+            print("   python transfixer.py --model distil-large-v3")
+            print("   python transfixer.py --force-cpu  # Use this if you have CUDA/cuDNN issues")
+            sys.exit(0)
         
         # Handle cleanup locks option
         if args.cleanup_locks:
@@ -1498,7 +1303,7 @@ if __name__ == "__main__":
             cleanup_lock_files()
             log_essential("✅ Lock file cleanup completed. You can now run TransFixer normally.")
             sys.exit(0)
-        main(args.num_workers, args.batch_size, args.analyze_performance, args.verbose_logging)
+        main(args.num_workers, args.batch_size, args.analyze_performance, args.verbose_logging, args.model, args.force_cpu)
 
     except KeyboardInterrupt:
         logger.info("KeyboardInterrupt caught in __main__, ensuring shutdown event is set.")

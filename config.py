@@ -21,7 +21,6 @@ CHECK_INTERVAL = 300  # Seconds between processing cycles
 # NEW: Optimized models for maximum performance
 # Option 1: OpenAI's latest turbo model (8x faster than large-v3, similar accuracy to large-v2)
 # Option 2: Distil-Whisper (6.3x faster than large-v3, within 1% WER)
-# Option 3: Use faster-whisper backend for CTranslate2 optimizations
 
 # Model selection based on performance requirements
 WHISPER_MODEL_OPTIONS = {
@@ -33,11 +32,7 @@ WHISPER_MODEL_OPTIONS = {
 
 # Current model selection - change this to optimize for your use case
 PERFORMANCE_PRIORITY = "speed_priority"  # Options: accuracy_priority, speed_priority, balanced, ultra_fast
-WHISPER_MODEL = WHISPER_MODEL_OPTIONS[PERFORMANCE_PRIORITY]
-
-# Alternative: Use faster-whisper backend (CTranslate2) - RECOMMENDED for maximum performance
-USE_FASTER_WHISPER_BACKEND = True  # Set to True for CTranslate2 optimizations
-FASTER_WHISPER_MODEL = "large-v3-turbo"  # or "distil-large-v3" for even better speed
+WHISPER_MODEL = WHISPER_MODEL_OPTIONS[PERFORMANCE_PRIORITY]  # This will use "openai/whisper-large-v3-turbo"
 
 # --- Ollama Configuration ---
 # Ensure your Ollama instance is running and the model is pulled (e.g., `ollama pull phi3:mini`)
@@ -75,22 +70,6 @@ TORCH_COMPILE_FULLGRAPH = True  # More aggressive optimization
 # Memory optimizations
 ENABLE_GRADIENT_CHECKPOINTING = False  # Trade compute for memory (not needed for inference)
 USE_STATIC_CACHE = True  # Enable static cache for torch.compile compatibility
-
-# CTranslate2 optimizations (when using faster-whisper)
-CTRANSLATE2_COMPUTE_TYPE = "float16"  # Options: "int8", "int8_float16", "float16", "float32"
-CTRANSLATE2_INTER_THREADS = 1  # Number of threads for inter-op parallelism
-CTRANSLATE2_INTRA_THREADS = 0  # 0 = use all available threads
-
-# Speculative decoding (use Distil-Whisper as assistant for 2x speedup)
-ENABLE_SPECULATIVE_DECODING = True
-ASSISTANT_MODEL = "distil-whisper/distil-large-v3"  # Assistant model for speculative decoding
-
-# Batched inference optimizations
-ENABLE_VAD_FILTER = True  # Voice Activity Detection for batched processing
-VAD_PARAMETERS = {
-    "min_silence_duration_ms": 500,  # Minimum silence duration to split
-    "speech_threshold": 0.5,  # Threshold for speech detection
-}
 
 # =============================================================================
 # GPU OPTIMIZATION SETTINGS
@@ -161,4 +140,26 @@ def get_performance_summary():
         "default_chunk_length": f"{DEFAULT_CHUNK_LENGTH}s",
         "aggressive_batching": AGGRESSIVE_BATCHING,
         "mixed_precision": ENABLE_MIXED_PRECISION
+    }
+
+def validate_configuration():
+    """Validate the current configuration and suggest fixes for common issues."""
+    issues = []
+    suggestions = []
+    
+    # Check for valid performance mode
+    if PERFORMANCE_MODE not in PERFORMANCE_CONFIGS:
+        issues.append(f"Invalid performance mode: {PERFORMANCE_MODE}")
+        suggestions.append(f"Use one of: {list(PERFORMANCE_CONFIGS.keys())}")
+    
+    # Check model configuration
+    if WHISPER_MODEL not in WHISPER_MODEL_OPTIONS.values():
+        # It's a custom model, that's okay
+        pass
+    
+    # Return validation results
+    return {
+        "valid": len(issues) == 0,
+        "issues": issues,
+        "suggestions": suggestions
     }
