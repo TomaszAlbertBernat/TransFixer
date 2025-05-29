@@ -16,7 +16,10 @@ from torch.cuda.amp import autocast
 from config import (
     OLLAMA_MODEL, CORRECTION_PROMPT, OLLAMA_API_URL, OLLAMA_OPTIONS,
     GPU_MEMORY_FRACTION, ENABLE_MIXED_PRECISION, DEFAULT_CHUNK_LENGTH,
-    MIN_CHUNK_LENGTH, MAX_CHUNK_LENGTH, MAX_BATCH_SIZE
+    MIN_CHUNK_LENGTH, MAX_CHUNK_LENGTH, MAX_BATCH_SIZE, PERFORMANCE_MODE,
+    MEMORY_SAFETY_FACTOR, ENABLE_FLASH_ATTENTION, FLASH_ATTENTION_AVAILABLE,
+    ATTENTION_IMPLEMENTATION, ENABLE_SDPA, ENABLE_TORCH_COMPILE,
+    TORCH_COMPILE_MODE, TORCH_COMPILE_FULLGRAPH, PERFORMANCE_MONITORING_AVAILABLE
 )
 from tqdm import tqdm
 import re
@@ -69,6 +72,10 @@ logger.addHandler(console_handler)
 
 # Global flag for verbose logging
 verbose_logging = False
+
+# Global flags for performance analysis
+analyze_performance = False
+performance_analysis_done = False
 
 def log_verbose(message, level=logging.INFO):
     """Log a message only if verbose logging is enabled."""
@@ -178,7 +185,6 @@ def log_performance_analysis_during_transcription():
                 log_verbose(f"   {key}: {value}")
                 
             # Compare with current config settings
-            from config import PERFORMANCE_MODE, MAX_BATCH_SIZE, DEFAULT_CHUNK_LENGTH
             log_verbose(f"📋 Current Config vs Recommended:")
             log_verbose(f"   Performance Mode: {PERFORMANCE_MODE} → {optimal_settings.get('performance_mode', 'current is fine')}")
             if 'batch_size' in optimal_settings:

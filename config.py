@@ -38,8 +38,26 @@ Maintain the original meaning and flow of the text. Return only the corrected te
 
 # --- Basic Performance Settings ---
 ENABLE_MIXED_PRECISION = True  # Enable automatic mixed precision for faster inference
-GPU_MEMORY_FRACTION = 0.8  # Use 80% of available GPU memory
+GPU_MEMORY_FRACTION = 0.9  # Use 80% of available GPU memory
 MAX_BATCH_SIZE = 16  # Maximum batch size for transcription
 DEFAULT_CHUNK_LENGTH = 30  # Default chunk length in seconds
 MIN_CHUNK_LENGTH = 20  # Minimum chunk length
 MAX_CHUNK_LENGTH = 60  # Maximum chunk length
+
+# --- Advanced Performance Settings ---
+PERFORMANCE_MODE = "balanced"  # Options: "conservative", "balanced", "aggressive"
+MEMORY_SAFETY_FACTOR = 0.8  # Memory safety factor for batch sizing
+
+# --- Flash Attention Configuration ---
+ENABLE_FLASH_ATTENTION = False  # Enable Flash Attention 2 if available
+FLASH_ATTENTION_AVAILABLE = False  # Will be detected automatically
+ATTENTION_IMPLEMENTATION = "sdpa"  # Options: "sdpa", "flash_attention_2", "eager"
+ENABLE_SDPA = True  # Enable Scaled Dot Product Attention
+
+# --- PyTorch Compile Configuration ---
+ENABLE_TORCH_COMPILE = False  # Enable torch.compile for PyTorch 2.0+
+TORCH_COMPILE_MODE = "reduce-overhead"  # Options: "default", "reduce-overhead", "max-autotune"
+TORCH_COMPILE_FULLGRAPH = True  # Enable fullgraph mode for torch.compile
+
+# --- Performance Monitoring ---
+PERFORMANCE_MONITORING_AVAILABLE = False  # Advanced performance monitoring (requires extra dependencies)
