@@ -4,7 +4,6 @@ import shutil
 import logging
 from multiprocessing import Pool, set_start_method
 import multiprocessing
-import requests
 import time
 from pathlib import Path
 import signal
@@ -14,15 +13,13 @@ import torch
 from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
 from torch.cuda.amp import autocast
 from config import (
-    OLLAMA_MODEL, CORRECTION_PROMPT, OLLAMA_API_URL, OLLAMA_OPTIONS,
-    GPU_MEMORY_FRACTION, ENABLE_MIXED_PRECISION, DEFAULT_CHUNK_LENGTH,
+    WHISPER_MODEL, GPU_MEMORY_FRACTION, ENABLE_MIXED_PRECISION, DEFAULT_CHUNK_LENGTH,
     MIN_CHUNK_LENGTH, MAX_CHUNK_LENGTH, MAX_BATCH_SIZE, PERFORMANCE_MODE,
     MEMORY_SAFETY_FACTOR, ENABLE_FLASH_ATTENTION, FLASH_ATTENTION_AVAILABLE,
     ATTENTION_IMPLEMENTATION, ENABLE_SDPA, ENABLE_TORCH_COMPILE,
     TORCH_COMPILE_MODE, TORCH_COMPILE_FULLGRAPH, PERFORMANCE_MONITORING_AVAILABLE
 )
 from tqdm import tqdm
-import re
 import psutil
 import GPUtil
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -58,7 +55,6 @@ LOG_DIR = "logs"
 LOG_FILE = os.path.join(LOG_DIR, "transcription_errors.log")
 MIN_CHARS = 50
 MAX_RETRIES = 3
-WHISPER_MODEL = "openai/whisper-large-v3-turbo"
 CHECK_INTERVAL = 300
 # --- END: Configuration ---
 
@@ -283,7 +279,7 @@ def cleanup_whisper():
         logger.error(f"Error cleaning up Whisper: {e}")
 
 def create_backup():
-    """Create a backup of transcriptions and corrected files."""
+    """Create a backup of transcriptions."""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     backup_dir = os.path.join("backup", timestamp)
     os.makedirs(backup_dir, exist_ok=True)
@@ -295,12 +291,6 @@ def create_backup():
     if os.path.exists(TRANSCRIPTIONS_DIR):
         shutil.copytree(TRANSCRIPTIONS_DIR, trans_backup, dirs_exist_ok=True)
         log_verbose("Transcriptions backed up successfully")
-    
-    # Backup corrected files
-    corr_backup = os.path.join(backup_dir, "corrected")
-    if os.path.exists(CORRECTED_DIR):
-        shutil.copytree(CORRECTED_DIR, corr_backup, dirs_exist_ok=True)
-        log_verbose("Corrected files backed up successfully")
     
     return backup_dir
 
@@ -317,7 +307,7 @@ def cleanup_old_backups(max_backups=5):
             log_verbose(f"Removed old backup: {old_dir}")
 
 def cleanup_lock_files():
-    """Clean up any remaining .lock or .correction.lock files by scanning directories."""
+    """Clean up any remaining .lock files by scanning directories."""
     log_verbose("Scanning for and removing orphaned lock files...")
     found_locks = 0
 
@@ -336,23 +326,10 @@ def cleanup_lock_files():
                         except Exception as e:
                             logger.error(f"Error cleaning up lock file {lock_file_path}: {e}")
     
-    # Scan for correction locks (.correction.lock) associated with files in TRANSCRIPTIONS_DIR
-    if os.path.exists(TRANSCRIPTIONS_DIR):
-        for root, _, files in os.walk(TRANSCRIPTIONS_DIR):
-            for file_name in files:
-                # Check for .correction.lock files that are siblings to non-lock files (e.g., .txt files)
-                if not file_name.endswith(".lock") and not file_name.endswith(".correction.lock"):
-                    lock_file_path = os.path.join(root, file_name + ".correction.lock")
-                    if os.path.exists(lock_file_path):
-                        try:
-                            os.remove(lock_file_path)
-                            log_verbose(f"Cleaned up orphaned correction lock file: {lock_file_path}")
-                            found_locks += 1
-                        except Exception as e:
-                            logger.error(f"Error cleaning up lock file {lock_file_path}: {e}")
-    
     if found_locks == 0:
         logger.info("No orphaned lock files found during scan.")
+    else:
+        logger.info(f"Cleaned up {found_locks} orphaned lock files.")
 
 def ensure_dir(directory):
     """Create directory if it doesn't exist."""
@@ -422,74 +399,6 @@ def transcribe_file(args):
         except Exception as e:
             logger.error(f"Error removing lock file for {audio_path}: {e}")
 
-def correct_file(args):
-    """Correct a transcription using Ollama API."""
-    trans_path, corrected_path = args
-    lock_file = trans_path + ".correction.lock"
-
-    if os.path.exists(lock_file):
-        log_verbose(f"Skipping correction for {trans_path}: lock file exists.")
-        return
-
-    if os.path.exists(corrected_path):
-        log_verbose(f"Skipping correction for {trans_path}: corrected file already exists.")
-        return
-    
-    if not is_valid_transcription(trans_path):
-        logger.warning(f"Skipping correction for {trans_path}: source transcription is invalid or too short.")
-        return
-
-    try:
-        Path(lock_file).touch()
-    except Exception as e:
-        logger.error(f"Error creating lock file for correction of {trans_path}: {e}")
-        return
-    
-    try:
-        log_essential(f"✏️  Correcting: {os.path.basename(trans_path)}")
-        with open(trans_path, "r", encoding="utf-8") as f:
-            text_to_correct = f.read()
-        payload = {
-            "model": OLLAMA_MODEL,
-            "messages": [
-                {"role": "system", "content": "You are a helpful assistant that corrects transcriptions."},
-                {"role": "user", "content": f"File: {os.path.basename(trans_path)}\n\n{CORRECTION_PROMPT}\n\n---\n\n{text_to_correct}"}
-            ],
-            "options": OLLAMA_OPTIONS,
-            "stream": False
-        }
-        response = requests.post(OLLAMA_API_URL, json=payload, timeout=300)
-        response.raise_for_status()
-        response_data = response.json()
-        corrected_text = response_data.get("message", {}).get("content", "")
-        corrected_text = re.sub(r'<think>[\s\S]*?</think>', '', corrected_text, flags=re.IGNORECASE)
-        if not corrected_text.strip():
-            logger.warning(f"Ollama returned empty correction for {trans_path}.")
-            return # Do not write empty file
-        ensure_dir(os.path.dirname(corrected_path))
-        with open(corrected_path, "w", encoding="utf-8") as f:
-            f.write(corrected_text.strip())
-        log_verbose(f"✅ Successfully corrected {os.path.basename(trans_path)}")
-
-    except requests.exceptions.ConnectionError as e:
-        logger.error(f"Ollama API connection error for {trans_path}: {e}.")
-    except requests.exceptions.Timeout:
-        logger.error(f"Ollama API request timed out for {trans_path}.")
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Ollama API request failed for {trans_path}: {e}")
-        if hasattr(e, 'response') and e.response is not None:
-            logger.error(f"Ollama API Response: {e.response.text}")
-    except KeyError as e:
-        logger.error(f"Unexpected response structure from Ollama for {trans_path}. Missing key: {e}.")
-    except Exception as e:
-        logger.error(f"Unexpected error during correction of {trans_path}: {e}")
-    finally:
-        try:
-            if os.path.exists(lock_file):
-                os.remove(lock_file)
-        except Exception as e:
-            logger.error(f"Error removing correction lock file for {trans_path}: {e}")
-
 def collect_transcription_tasks():
     """Collect audio files needing transcription."""
     tasks = []
@@ -520,30 +429,6 @@ def collect_transcription_tasks():
 
                 if not (os.path.exists(trans_path) and is_valid_transcription(trans_path)):
                     tasks.append((audio_path, trans_path))
-    return tasks
-
-def collect_correction_tasks():
-    """Collect transcriptions needing correction."""
-    tasks = []
-    logger.info("Scanning for transcriptions to correct...")
-    for root, _, files in os.walk(TRANSCRIPTIONS_DIR):
-        for file in files:
-            if file.lower().endswith(".txt"):
-                trans_path = os.path.join(root, file)
-                rel_path = os.path.relpath(trans_path, TRANSCRIPTIONS_DIR)
-                corrected_path = os.path.join(CORRECTED_DIR, rel_path)
-
-                ensure_dir(os.path.dirname(corrected_path)) # Ensure specific subdirectory exists
-
-                # Check for lock file first
-                lock_file = trans_path + ".correction.lock"
-                if os.path.exists(lock_file):
-                    logger.info(f"Skipping task for {trans_path}: correction lock file exists.")
-                    continue
-                
-                # Only add task if corrected file doesn't exist AND source transcription is valid
-                if not os.path.exists(corrected_path) and is_valid_transcription(trans_path):
-                    tasks.append((trans_path, corrected_path))
     return tasks
 
 def get_system_resources():
@@ -869,7 +754,6 @@ def main(num_workers_arg, batch_size_arg, analyze_performance_arg=False, verbose
     # Create required directories
     ensure_dir(AUDIO_DIR)
     ensure_dir(TRANSCRIPTIONS_DIR)
-    ensure_dir(CORRECTED_DIR)
     ensure_dir(LOG_DIR)
 
     # Start monitoring systems
@@ -891,11 +775,10 @@ def main(num_workers_arg, batch_size_arg, analyze_performance_arg=False, verbose
             # Optimize cache before processing
             model_cache_manager.optimize_cache()
             
-            # Collect tasks
+            # Collect transcription tasks
             transcription_tasks = collect_transcription_tasks()
-            correction_tasks = collect_correction_tasks()
 
-            if not transcription_tasks and not correction_tasks:
+            if not transcription_tasks:
                 log_essential("No new tasks found. Waiting for new files...")
                 # Check system health during idle time
                 try:
@@ -961,16 +844,6 @@ def main(num_workers_arg, batch_size_arg, analyze_performance_arg=False, verbose
                                 except Exception as retry_error:
                                     logger.error(f"Retry failed for batch: {retry_error}")
 
-            # Process correction tasks
-            if correction_tasks:
-                log_essential(f"Found {len(correction_tasks)} files to correct")
-                
-                # Process corrections sequentially to avoid overwhelming Ollama
-                for task in correction_tasks:
-                    if process_manager.is_shutdown_requested():
-                        break
-                    correct_file(task)
-
             # Create backup after processing
             try:
                 backup_dir = create_backup()
@@ -1020,8 +893,8 @@ def main(num_workers_arg, batch_size_arg, analyze_performance_arg=False, verbose
 
 if __name__ == "__main__":
     try:
-        log_essential("🚀 Starting TransFixer (Enhanced Edition)...")
-        parser = argparse.ArgumentParser(description="TransFixer: Transcribe and correct audio files.")
+        log_essential("🚀 Starting TransFixer (Transcription Edition)...")
+        parser = argparse.ArgumentParser(description="TransFixer: Transcribe audio files using Whisper.")
         parser.add_argument("--num-workers", type=int, choices=[1, 2], default=1, help="Number of worker processes for transcription (1 or 2). Default is 1.")
         parser.add_argument("--batch-size", type=int, default=8, help="Batch size for transcription tasks. Default is 8.")
         parser.add_argument("--cleanup-locks", action="store_true", help="Remove all lock files and exit. Use this if transcription was interrupted.")
