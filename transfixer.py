@@ -29,6 +29,24 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 import threading
 import argparse
 
+# Import new core components
+from core import (
+    ProcessManager, GPUManager, ModelCacheManager, SystemMonitor,
+    TransFixerError, ProcessError, GPUError, ModelCacheError
+)
+
+# Global process manager instance
+process_manager = ProcessManager()
+
+# Global GPU manager instance
+gpu_manager = GPUManager()
+
+# Global model cache manager instance
+model_cache_manager = ModelCacheManager()
+
+# Global system monitor instance
+system_monitor = SystemMonitor()
+
 # Global shutdown event
 shutdown_event = threading.Event()
 
@@ -92,334 +110,177 @@ def log_essential(message, level=logging.INFO):
         else:
             print(message)
 
-# Global variables for model caching
-model_cache = {
-    'model': None,
-    'processor': None,
-    'pipeline': None,
-    'last_used': None,
-    'device': None,
-    'lock': threading.Lock()
-}
-
-MODEL_CACHE_TIMEOUT = 3600  # 60 minutes
-MIN_MEMORY_THRESHOLD = 0.8  # 80% memory usage threshold
-
-def is_wsl():
-    """Check if running in WSL (Windows Subsystem for Linux)."""
+def cleanup_gpu_resources():
+    """Enhanced GPU resource cleanup using GPU manager."""
     try:
-        with open('/proc/version', 'r') as f:
-            return 'microsoft' in f.read().lower() or 'wsl' in f.read().lower()
-    except:
-        return False
-
-def force_exit_wsl():
-    """Force exit in WSL by killing the process tree."""
-    if is_wsl():
-        try:
-            # In WSL, try to kill the entire process tree
-            os.system(f"pkill -f {os.path.basename(__file__)}")
-        except:
-            pass
-
-def log_performance_analysis_during_transcription():
-    """Log performance analysis during active transcription when GPU is actually being used."""
-    global performance_analysis_done
-    
-    if performance_analysis_done or not PERFORMANCE_MONITORING_AVAILABLE:
-        return
-    
-    performance_analysis_done = True
-    
-    log_verbose("=" * 60)
-    log_verbose("📊 PERFORMANCE ANALYSIS DURING ACTIVE TRANSCRIPTION:")
-    log_verbose("=" * 60)
-    
-    try:
-        from advanced_performance_monitor import PerformanceOptimizer, PerformanceMetrics
-        from datetime import datetime
-        
-        # Wait a moment for GPU utilization to stabilize
-        time.sleep(2)
-        
-        # Get current metrics during active transcription
-        resources = get_system_resources()
-        
-        # Create metrics object
-        metrics = PerformanceMetrics(
-            timestamp=datetime.now(),
-            cpu_percent=resources['cpu_percent'],
-            memory_percent=resources['memory_percent'],
-            memory_used_gb=resources['memory_available'] / (1024**3),
-            gpu_memory_used_mb=resources['gpu_info'][0]['memory_used'] if resources['gpu_info'] else None,
-            gpu_memory_total_mb=resources['gpu_info'][0]['memory_total'] if resources['gpu_info'] else None,
-            gpu_utilization=None,
-            gpu_temperature=resources['gpu_info'][0]['temperature'] if resources['gpu_info'] else None
-        )
-        
-        optimizer = PerformanceOptimizer()
-        suggestions = optimizer.analyze_performance(metrics)
-        optimal_settings = optimizer.suggest_optimal_settings(metrics)
-        
-        # Log current system state during transcription
-        log_verbose(f"💻 System Under Load (during transcription):")
-        log_verbose(f"   CPU: {metrics.cpu_percent:.1f}% | Memory: {metrics.memory_percent:.1f}%")
-        if metrics.gpu_memory_used_mb:
-            gpu_usage = (metrics.gpu_memory_used_mb / metrics.gpu_memory_total_mb) * 100
-            log_verbose(f"   GPU Memory: {gpu_usage:.1f}% ({metrics.gpu_memory_used_mb:.0f}MB/{metrics.gpu_memory_total_mb:.0f}MB)")
-            if metrics.gpu_temperature:
-                log_verbose(f"   GPU Temperature: {metrics.gpu_temperature}°C")
-        
-        # Log suggestions based on real working load
-        if suggestions:
-            log_verbose(f"🔧 Optimization Suggestions (based on real workload):")
-            for suggestion in suggestions:
-                log_verbose(f"   {suggestion}")
-        else:
-            log_verbose(f"🎯 System performance looks optimal during transcription!")
-        
-        # Log optimal settings based on actual usage
-        if optimal_settings:
-            log_verbose(f"⚙️  Recommended Settings (based on actual GPU usage):")
-            for key, value in optimal_settings.items():
-                log_verbose(f"   {key}: {value}")
-                
-            # Compare with current config settings
-            log_verbose(f"📋 Current Config vs Recommended:")
-            log_verbose(f"   Performance Mode: {PERFORMANCE_MODE} → {optimal_settings.get('performance_mode', 'current is fine')}")
-            if 'batch_size' in optimal_settings:
-                log_verbose(f"   Batch Size: {MAX_BATCH_SIZE} → {optimal_settings['batch_size']}")
-            if 'chunk_length' in optimal_settings:
-                log_verbose(f"   Chunk Length: {DEFAULT_CHUNK_LENGTH} → {optimal_settings['chunk_length']}")
-        
-        log_verbose(f"💡 Note: These recommendations are based on actual GPU utilization during transcription.")
-        log_verbose(f"💡 You can adjust settings in config.py or use --batch-size parameter.")
-                
+        gpu_manager.cleanup_gpu_memory()
+        logger.info("GPU resources cleaned up successfully")
     except Exception as e:
-        logger.warning(f"Could not generate performance analysis: {e}")
-    
-    log_verbose("=" * 60)
-
-def should_unload_model():
-    """Determine if the model should be unloaded based on system resources."""
-    resources = get_system_resources()
-    
-    # Check memory usage
-    if resources['memory_percent'] > MIN_MEMORY_THRESHOLD * 100:
-        log_verbose("Memory usage high, unloading model")
-        return True
-    
-    # Check GPU memory if available
-    if resources['gpu_info']:
-        gpu = resources['gpu_info'][0]
-        if gpu['memory_used'] / gpu['memory_total'] > MIN_MEMORY_THRESHOLD:
-            log_verbose("GPU memory usage high, unloading model")
-            return True
-    
-    return False
-
-def is_model_cache_valid():
-    """Check if the cached model is still valid."""
-    if model_cache['model'] is None:
-        return False
-    
-    if model_cache['last_used'] is None:
-        return False
-    
-    # Check if cache has expired
-    if datetime.now() - model_cache['last_used'] > timedelta(seconds=MODEL_CACHE_TIMEOUT):
-        log_verbose("Model cache expired")
-        return False
-    
-    # Check if we should unload due to resource constraints
-    if should_unload_model():
-        return False
-    
-    return True
+        logger.error(f"Error cleaning up GPU resources: {e}")
 
 def initialize_whisper():
-    """Initialize Whisper model with optimized settings."""
-    global model_cache
-    
-    # Check if we can use the cached model
-    with model_cache['lock']:
-        if is_model_cache_valid():
-            log_verbose("Using cached model")
-            model_cache['last_used'] = datetime.now()
-            return
-    
+    """Initialize Whisper model with improved caching and GPU management."""
     process_id = os.getpid()
+    cache_key = f"whisper_{WHISPER_MODEL}"
+    
+    # Try to get from cache first
+    cached_model = model_cache_manager.get(cache_key)
+    if cached_model:
+        log_verbose(f"Process {process_id}: Using cached Whisper model")
+        return cached_model
+    
     log_verbose(f"Process {process_id}: Initializing Whisper model")
     
-    # Smart GPU selection based on available memory
-    if torch.cuda.is_available():
-        gpu_count = torch.cuda.device_count()
-        if gpu_count > 1:
-            best_gpu = select_best_gpu()
-            device = f"cuda:{best_gpu}" if best_gpu is not None else "cuda:0"
-            log_verbose(f"Process {process_id} using smart-selected GPU {best_gpu} of {gpu_count} available GPUs")
-        else:
-            device = "cuda:0"
-            log_verbose(f"Process {process_id} using single available GPU")
-    else:
-        device = "cpu"
-        log_verbose(f"Process {process_id} using CPU")
-
-    # Always use float16 for GPU, float32 for CPU
-    torch_dtype = torch.float16 if device != "cpu" else torch.float32
-
     try:
-        with model_cache['lock']:
-            log_verbose(f"Process {process_id}: Loading model {WHISPER_MODEL}...")
-            
-            # Model loading with optimizations
-            model_kwargs = {
-                "torch_dtype": torch_dtype,
-                "low_cpu_mem_usage": True if device != "cpu" else False,
-                "use_safetensors": True,
-            }
-            
-            # Add attention implementation if Flash Attention is available
-            if ENABLE_FLASH_ATTENTION and FLASH_ATTENTION_AVAILABLE and ATTENTION_IMPLEMENTATION == "flash_attention_2":
-                model_kwargs["attn_implementation"] = "flash_attention_2"
-                log_verbose(f"Process {process_id}: Using Flash Attention 2")
-            elif ENABLE_SDPA:
-                model_kwargs["attn_implementation"] = "sdpa"
-                log_verbose(f"Process {process_id}: Using SDPA (Scaled Dot Product Attention)")
-            
-            model = AutoModelForSpeechSeq2Seq.from_pretrained(WHISPER_MODEL, **model_kwargs)
-            model.to(device)
-            log_verbose(f"Process {process_id}: Model loaded successfully")
+        # Select best GPU using GPU manager
+        best_gpu = gpu_manager.select_best_gpu()
+        if best_gpu is not None and torch.cuda.is_available():
+            device = f"cuda:{best_gpu}"
+            log_verbose(f"Process {process_id}: Using GPU {best_gpu}")
+        else:
+            device = "cpu"
+            log_verbose(f"Process {process_id}: Using CPU")
 
-            log_verbose(f"Process {process_id}: Loading processor...")
-            processor = AutoProcessor.from_pretrained(WHISPER_MODEL)
-            log_verbose(f"Process {process_id}: Processor loaded successfully")
+        # Always use float16 for GPU, float32 for CPU
+        torch_dtype = torch.float16 if device != "cpu" else torch.float32
 
-            # Get current resource info and calculate optimal settings
-            resources = get_system_resources()
-            optimal_batch_size = calculate_conservative_batch_size(device)
+        log_verbose(f"Process {process_id}: Loading model {WHISPER_MODEL}...")
+        
+        # Model loading with optimizations
+        model_kwargs = {
+            "torch_dtype": torch_dtype,
+            "low_cpu_mem_usage": True if device != "cpu" else False,
+            "use_safetensors": True,
+        }
+        
+        # Add attention implementation if Flash Attention is available
+        if ENABLE_FLASH_ATTENTION and FLASH_ATTENTION_AVAILABLE and ATTENTION_IMPLEMENTATION == "flash_attention_2":
+            model_kwargs["attn_implementation"] = "flash_attention_2"
+            log_verbose(f"Process {process_id}: Using Flash Attention 2")
+        elif ENABLE_SDPA:
+            model_kwargs["attn_implementation"] = "sdpa"
+            log_verbose(f"Process {process_id}: Using SDPA (Scaled Dot Product Attention)")
+        
+        model = AutoModelForSpeechSeq2Seq.from_pretrained(WHISPER_MODEL, **model_kwargs)
+        model.to(device)
+        log_verbose(f"Process {process_id}: Model loaded successfully")
+
+        log_verbose(f"Process {process_id}: Loading processor...")
+        processor = AutoProcessor.from_pretrained(WHISPER_MODEL)
+        log_verbose(f"Process {process_id}: Processor loaded successfully")
+
+        # Calculate optimal batch size using GPU manager
+        if device != "cpu":
+            gpu_id = int(device.split(":")[1]) if ":" in device else 0
+            optimal_batch_size = gpu_manager.calculate_optimal_batch_size(gpu_id)
+        else:
+            optimal_batch_size = 4
+        
+        # Calculate optimal chunk length
+        chunk_length_s = DEFAULT_CHUNK_LENGTH
+        if device != "cpu":
+            gpu_info = gpu_manager.get_gpu_info(gpu_id)
+            available_memory_gb = gpu_info['memory_available'] / 1024
             
-            # Calculate optimal chunk length based on performance mode and available memory
-            chunk_length_s = DEFAULT_CHUNK_LENGTH
-            if device != "cpu" and resources['gpu_info']:
-                gpu = resources['gpu_info'][0]
-                available_memory_gb = (gpu['memory_total'] - gpu['memory_used']) / 1024
+            if PERFORMANCE_MODE == "aggressive":
+                if available_memory_gb > 8:
+                    chunk_length_s = min(MAX_CHUNK_LENGTH, 90)
+                elif available_memory_gb > 6:
+                    chunk_length_s = min(MAX_CHUNK_LENGTH, 75)
+                elif available_memory_gb > 4:
+                    chunk_length_s = min(MAX_CHUNK_LENGTH, 60)
+                else:
+                    chunk_length_s = min(MAX_CHUNK_LENGTH, 50)
+            elif PERFORMANCE_MODE == "balanced":
+                if available_memory_gb > 6:
+                    chunk_length_s = min(MAX_CHUNK_LENGTH, 60)
+                elif available_memory_gb > 4:
+                    chunk_length_s = min(MAX_CHUNK_LENGTH, 45)
+                else:
+                    chunk_length_s = min(MAX_CHUNK_LENGTH, 35)
+            else:  # conservative mode
+                if available_memory_gb > 6:
+                    chunk_length_s = 45
+                elif available_memory_gb > 4:
+                    chunk_length_s = 35
+        
+        log_verbose(f"Process {process_id}: Performance mode: {PERFORMANCE_MODE} | "
+                   f"Using batch_size={optimal_batch_size}, chunk_length_s={chunk_length_s}")
+
+        # Create the pipeline with optimized settings
+        log_verbose(f"Process {process_id}: Creating optimized Whisper pipeline...")
+        whisper_pipeline = pipeline(
+            "automatic-speech-recognition",
+            model=model,
+            tokenizer=processor.tokenizer,
+            feature_extractor=processor.feature_extractor,
+            chunk_length_s=chunk_length_s,
+            batch_size=optimal_batch_size,
+            return_timestamps=True,
+            torch_dtype=torch_dtype,
+            device=device,
+        )
+        log_verbose(f"Process {process_id}: Optimized pipeline created successfully")
+        
+        # Enable torch compile if available (PyTorch 2.0+)
+        if ENABLE_TORCH_COMPILE and hasattr(torch, 'compile'):
+            log_verbose("Enabling PyTorch compile for maximum performance")
+            try:
+                # Apply torch.compile with optimal settings
+                model = torch.compile(
+                    model, 
+                    mode=TORCH_COMPILE_MODE, 
+                    fullgraph=TORCH_COMPILE_FULLGRAPH
+                )
+                log_verbose("✓ Torch compile enabled - expect 4.5x speed improvement")
+            except Exception as e:
+                logger.warning(f"Torch compile failed: {e}")
+        
+        # Store in cache with cleanup callback
+        def cleanup_callback():
+            try:
+                # Move model to CPU first to free GPU memory
+                if hasattr(model, 'to'):
+                    model.to('cpu')
                 
-                if PERFORMANCE_MODE == "aggressive":
-                    if available_memory_gb > 8:
-                        chunk_length_s = min(MAX_CHUNK_LENGTH, 90)
-                    elif available_memory_gb > 6:
-                        chunk_length_s = min(MAX_CHUNK_LENGTH, 75)
-                    elif available_memory_gb > 4:
-                        chunk_length_s = min(MAX_CHUNK_LENGTH, 60)
-                    else:
-                        chunk_length_s = min(MAX_CHUNK_LENGTH, 50)
-                elif PERFORMANCE_MODE == "balanced":
-                    if available_memory_gb > 6:
-                        chunk_length_s = min(MAX_CHUNK_LENGTH, 60)
-                    elif available_memory_gb > 4:
-                        chunk_length_s = min(MAX_CHUNK_LENGTH, 45)
-                    else:
-                        chunk_length_s = min(MAX_CHUNK_LENGTH, 35)
-                else:  # conservative mode
-                    if available_memory_gb > 6:
-                        chunk_length_s = 45
-                    elif available_memory_gb > 4:
-                        chunk_length_s = 35
-            
-            log_verbose(f"Process {process_id}: Performance mode: {PERFORMANCE_MODE} | "
-                       f"Using batch_size={optimal_batch_size}, chunk_length_s={chunk_length_s}")
-
-            # Create the pipeline with optimized settings
-            log_verbose(f"Process {process_id}: Creating optimized Whisper pipeline...")
-            whisper_pipeline = pipeline(
-                "automatic-speech-recognition",
-                model=model,
-                tokenizer=processor.tokenizer,
-                feature_extractor=processor.feature_extractor,
-                chunk_length_s=chunk_length_s,
-                batch_size=optimal_batch_size,
-                return_timestamps=True,
-                torch_dtype=torch_dtype,
-                device=device,
-            )
-            log_verbose(f"Process {process_id}: Optimized pipeline created successfully")
-            
-            # Enable torch compile if available (PyTorch 2.0+)
-            if ENABLE_TORCH_COMPILE and hasattr(torch, 'compile'):
-                log_verbose("Enabling PyTorch compile for maximum performance")
-                try:
-                    # Apply torch.compile with optimal settings
-                    model = torch.compile(
-                        model, 
-                        mode=TORCH_COMPILE_MODE, 
-                        fullgraph=TORCH_COMPILE_FULLGRAPH
-                    )
-                    log_verbose("✓ Torch compile enabled - expect 4.5x speed improvement")
-                except Exception as e:
-                    logger.warning(f"Torch compile failed: {e}")
-            
-            # Update cache
-            model_cache.update({
-                'model': model,
-                'processor': processor,
-                'pipeline': whisper_pipeline,
-                'last_used': datetime.now(),
-                'device': device
-            })
-            
+                # Enhanced CUDA cleanup
+                if torch.cuda.is_available() and "cuda" in device:
+                    gpu_id = int(device.split(":")[1]) if ":" in device else 0
+                    gpu_manager.cleanup_gpu_memory(gpu_id)
+                    
+                log_verbose(f"Model cleanup completed for {cache_key}")
+            except Exception as e:
+                logger.error(f"Error in model cleanup: {e}")
+        
+        model_cache_manager.put(
+            cache_key,
+            model=model,
+            processor=processor,
+            pipeline=whisper_pipeline,
+            device=device,
+            cleanup_callback=cleanup_callback
+        )
+        
+        return {
+            'model': model,
+            'processor': processor,
+            'pipeline': whisper_pipeline,
+            'device': device
+        }
+        
     except Exception as e:
         logger.error(f"Process {process_id}: Error initializing Whisper: {e}")
-        cleanup_whisper()
+        cleanup_gpu_resources()
         raise
 
 def cleanup_whisper():
-    """Clean up Whisper model resources with improved memory management."""
-    global model_cache
-    
-    with model_cache['lock']:
-        if model_cache['model'] is None:
-            return
-            
-        process_id = os.getpid()
-        device = model_cache.get('device', 'cpu')
-        
-        log_verbose(f"Process {process_id}: Cleaning up Whisper model resources...")
-        
-        try:
-            # Move model to CPU first to free GPU memory
-            if hasattr(model_cache['model'], 'to'):
-                model_cache['model'].to('cpu')
-            
-            # Clear all references
-            del model_cache['model']
-            del model_cache['processor']
-            del model_cache['pipeline']
-            
-            model_cache.update({
-                'model': None,
-                'processor': None,
-                'pipeline': None,
-                'last_used': None,
-                'device': None
-            })
-                
-            # Enhanced CUDA cleanup
-            if torch.cuda.is_available() and "cuda" in device:
-                gpu_id = int(device.split(":")[1]) if ":" in device else 0
-                
-                with torch.cuda.device(gpu_id):
-                    torch.cuda.empty_cache()
-                    torch.cuda.ipc_collect()
-                    
-                # Force garbage collection
-                import gc
-                gc.collect()
-                
-                log_verbose(f"Process {process_id}: Enhanced cleanup completed for {device}")
-                
-        except Exception as e:
-            logger.error(f"Process {process_id}: Error during Whisper cleanup: {e}")
+    """Clean up Whisper model resources using cache manager."""
+    try:
+        cache_key = f"whisper_{WHISPER_MODEL}"
+        model_cache_manager.remove(cache_key)
+        log_verbose("Whisper model resources cleaned up")
+    except Exception as e:
+        logger.error(f"Error cleaning up Whisper: {e}")
 
 def create_backup():
     """Create a backup of transcriptions and corrected files."""
@@ -493,56 +354,6 @@ def cleanup_lock_files():
     if found_locks == 0:
         logger.info("No orphaned lock files found during scan.")
 
-# Global flag to prevent recursive signal handling
-_signal_received = False
-
-def signal_handler(signum, frame):
-    """Handle termination signals."""
-    global _signal_received
-    
-    # Prevent recursive signal handling
-    if _signal_received:
-        logger.info(f"Signal {signum} already being handled, forcing immediate exit...")
-        os._exit(1)
-    
-    _signal_received = True
-    logger.info(f"Received signal {signum}, initiating shutdown...")
-    shutdown_event.set()
-    
-    # Force terminate all child processes
-    try:
-        current_process = psutil.Process()
-        children = current_process.children(recursive=True)
-        for child in children:
-            try:
-                logger.info(f"Terminating child process {child.pid}")
-                child.terminate()
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                pass
-        
-        # Wait a bit for graceful termination
-        time.sleep(1)  # Reduced from 2 seconds
-        
-        # Force kill any remaining children
-        for child in children:
-            try:
-                if child.is_running():
-                    logger.info(f"Force killing child process {child.pid}")
-                    child.kill()
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                pass
-                
-    except Exception as e:
-        logger.error(f"Error in signal handler: {e}")
-    
-    logger.info("Signal handler complete, forcing exit...")
-    # Use os._exit() for immediate termination without cleanup
-    os._exit(0)
-
-# Register signal handlers
-signal.signal(signal.SIGINT, signal_handler)
-signal.signal(signal.SIGTERM, signal_handler)
-
 def ensure_dir(directory):
     """Create directory if it doesn't exist."""
     os.makedirs(directory, exist_ok=True)
@@ -583,10 +394,9 @@ def transcribe_file(args):
     try:
         while retries < MAX_RETRIES:
             logger.info(f"Starting transcription of {audio_path} (attempt {retries + 1}/{MAX_RETRIES})")
-            initialize_whisper()
+            model_components = initialize_whisper()
             pbar = tqdm(total=100, desc=f"Transcribing {os.path.basename(audio_path)}", leave=False, position=1)
-            with model_cache['lock']:
-                result = model_cache['pipeline'](audio_path, generate_kwargs={"max_new_tokens": 256})
+            result = model_components['pipeline'](audio_path, generate_kwargs={"max_new_tokens": 256})
             transcription = result["text"]
             pbar.update(100)
             pbar.close()
@@ -737,99 +547,36 @@ def collect_correction_tasks():
     return tasks
 
 def get_system_resources():
-    """Get current system resource usage."""
-    cpu_percent = psutil.cpu_percent(interval=1)
-    memory = psutil.virtual_memory()
-    gpu_info = []
-    
-    if torch.cuda.is_available():
-        try:
-            gpus = GPUtil.getGPUs()
-            for gpu in gpus:
-                gpu_info.append({
-                    'id': gpu.id,
-                    'name': gpu.name,
-                    'memory_used': gpu.memoryUsed,
-                    'memory_total': gpu.memoryTotal,
-                    'temperature': gpu.temperature
-                })
-        except Exception as e:
-            logger.warning(f"Error getting GPU info: {e}")
-    
-    return {
-        'cpu_percent': cpu_percent,
-        'memory_percent': memory.percent,
-        'memory_available': memory.available,
-        'gpu_info': gpu_info
-    }
+    """Get current system resource usage using system monitor."""
+    try:
+        return system_monitor.get_system_resources()
+    except Exception as e:
+        logger.error(f"Error getting system resources: {e}")
+        # Return minimal fallback data
+        return {
+            'cpu': {'percent': 0},
+            'memory': {'percent': 0, 'available': 0},
+            'gpu': {'devices': []}
+        }
 
 def calculate_conservative_batch_size(device: str) -> int:
-    """Calculate batch size to optimize VRAM utilization based on performance mode."""
+    """Calculate batch size using GPU manager."""
     if "cuda" not in device:
         return 4
-        
+    
     try:
         gpu_id = int(device.split(":")[1]) if ":" in device else 0
-        gpus = GPUtil.getGPUs()
-        if gpu_id < len(gpus):
-            gpu = gpus[gpu_id]
-            available_memory_mb = gpu.memoryTotal - gpu.memoryUsed
-            
-            # Use performance mode settings from config
-            from config import MEMORY_SAFETY_FACTOR, MAX_BATCH_SIZE, PERFORMANCE_MODE
-            
-            # Apply memory safety factor based on performance mode
-            safe_memory = available_memory_mb * MEMORY_SAFETY_FACTOR
-            
-            # Aggressive batch sizing based on available memory
-            if safe_memory > 10000:   # 10GB+ available
-                batch_size = min(MAX_BATCH_SIZE, 24)
-            elif safe_memory > 8000:  # 8GB+ available  
-                batch_size = min(MAX_BATCH_SIZE, 20)
-            elif safe_memory > 6000:  # 6GB+ available
-                batch_size = min(MAX_BATCH_SIZE, 16)
-            elif safe_memory > 4000:  # 4GB+ available
-                batch_size = min(MAX_BATCH_SIZE, 12)
-            elif safe_memory > 2000:  # 2GB+ available
-                batch_size = min(MAX_BATCH_SIZE, 8)
-            else:
-                batch_size = min(MAX_BATCH_SIZE, 4)
-            
-            log_verbose(f"Performance mode: {PERFORMANCE_MODE} | Available: {available_memory_mb}MB | "
-                       f"Safe memory: {safe_memory:.0f}MB | Batch size: {batch_size}")
-            
-            return batch_size
-            
+        return gpu_manager.calculate_optimal_batch_size(gpu_id)
     except Exception as e:
         logger.warning(f"Error calculating batch size: {e}")
-        
-    return 4  # Safe default
+        return 4
 
 def select_best_gpu():
-    """Select GPU with most available memory to prevent OOM errors."""
+    """Select GPU using GPU manager."""
     try:
-        if not torch.cuda.is_available():
-            return None
-            
-        gpus = GPUtil.getGPUs()
-        if not gpus:
-            return 0
-            
-        # Find GPU with most available memory
-        best_gpu = 0
-        max_available = 0
-        
-        for gpu in gpus:
-            available = gpu.memoryTotal - gpu.memoryUsed
-            log_verbose(f"GPU {gpu.id}: {available}MB available out of {gpu.memoryTotal}MB total")
-            if available > max_available:
-                max_available = available
-                best_gpu = gpu.id
-                
-        log_verbose(f"Selected GPU {best_gpu} with {max_available}MB available memory")
-        return best_gpu
+        return gpu_manager.select_best_gpu()
     except Exception as e:
-        logger.warning(f"Error selecting best GPU: {e}, using GPU 0")
+        logger.warning(f"Error selecting best GPU: {e}")
         return 0
 
 def process_transcription_batch(tasks_and_config):
@@ -865,10 +612,10 @@ def process_transcription_batch(tasks_and_config):
         
         # Get initial resources
         initial_resources = get_system_resources()
-        log_verbose(f"Process {process_id}: Initial resources - CPU: {initial_resources['cpu_percent']}%, "
-                   f"Memory: {initial_resources['memory_percent']}%")
-        if initial_resources['gpu_info']:
-            gpu = initial_resources['gpu_info'][0]
+        log_verbose(f"Process {process_id}: Initial resources - CPU: {initial_resources['cpu']['percent']}%, "
+                   f"Memory: {initial_resources['memory']['percent']}%")
+        if initial_resources['gpu']['devices']:
+            gpu = initial_resources['gpu']['devices'][0]
             log_verbose(f"Process {process_id}: GPU Memory: {gpu['memory_used']}MB/{gpu['memory_total']}MB used")
         
         # Process the entire batch using optimized batch transcription
@@ -883,11 +630,11 @@ def process_transcription_batch(tasks_and_config):
         
         log_verbose(f"Process {process_id}: Batch of {len(tasks)} files completed in {batch_time:.2f}s "
                    f"({files_per_second:.2f} files/sec). Success: {successful}, Failed: {failed}")
-        log_verbose(f"Process {process_id}: Current resources - CPU: {current_resources['cpu_percent']}%, "
-                   f"Memory: {current_resources['memory_percent']}%")
+        log_verbose(f"Process {process_id}: Current resources - CPU: {current_resources['cpu']['percent']}%, "
+                   f"Memory: {current_resources['memory']['percent']}%")
         
-        if current_resources['gpu_info']:
-            gpu = current_resources['gpu_info'][0]
+        if current_resources['gpu']['devices']:
+            gpu = current_resources['gpu']['devices'][0]
             log_verbose(f"Process {process_id}: GPU Memory: {gpu['memory_used']}MB/{gpu['memory_total']}MB used")
             
     except Exception as e:
@@ -906,10 +653,10 @@ def process_transcription_batch(tasks_and_config):
         # Log final resources
         try:
             final_resources = get_system_resources()
-            log_verbose(f"Process {process_id}: Final resources - CPU: {final_resources['cpu_percent']}%, "
-                       f"Memory: {final_resources['memory_percent']}%")
-            if final_resources['gpu_info']:
-                gpu = final_resources['gpu_info'][0]
+            log_verbose(f"Process {process_id}: Final resources - CPU: {final_resources['cpu']['percent']}%, "
+                       f"Memory: {final_resources['memory']['percent']}%")
+            if final_resources['gpu']['devices']:
+                gpu = final_resources['gpu']['devices'][0]
                 log_verbose(f"Process {process_id}: Final GPU Memory: {gpu['memory_used']}MB/{gpu['memory_total']}MB used")
         except Exception as resource_error:
             logger.error(f"Process {process_id}: Error getting final resources: {resource_error}")
@@ -924,33 +671,21 @@ def transcribe_files_batch(file_batch):
     log_verbose(f"Process {process_id}: Starting batch transcription of {len(file_batch)} files")
     
     # Initialize Whisper for this process if not already done
-    initialize_whisper()
-    
-    # Log performance analysis after model is loaded and about to start transcription
-    # This will capture the real GPU usage during active transcription
-    if not performance_analysis_done and analyze_performance:
-        # Start transcription in a separate thread to analyze while it's running
-        def delayed_analysis():
-            time.sleep(3)  # Wait for transcription to start using GPU
-            log_performance_analysis_during_transcription()
-        
-        analysis_thread = threading.Thread(target=delayed_analysis, daemon=True)
-        analysis_thread.start()
+    model_components = initialize_whisper()
     
     successful_transcriptions = 0
     failed_transcriptions = 0
     
     try:
-        with model_cache['lock']:
-            pipeline = model_cache['pipeline']
-            device = model_cache['device']
-            
-            log_verbose(f"Process {process_id}: Using transformers pipeline for transcription")
-            
-            successful, failed = _transcribe_batch_transformers(file_batch, pipeline, device)
-            successful_transcriptions += successful
-            failed_transcriptions += failed
-            
+        pipeline = model_components['pipeline']
+        device = model_components['device']
+        
+        log_verbose(f"Process {process_id}: Using transformers pipeline for transcription")
+        
+        successful, failed = _transcribe_batch_transformers(file_batch, pipeline, device)
+        successful_transcriptions += successful
+        failed_transcriptions += failed
+        
     except Exception as e:
         logger.error(f"Process {process_id}: Critical error in batch transcription: {e}")
         raise
@@ -1028,43 +763,57 @@ def preload_and_optimize_model():
     
     try:
         # Initialize the model
-        initialize_whisper()
+        model_components = initialize_whisper()
         
         # Get current resource info
-        resources = get_system_resources()
-        if resources['gpu_info']:
-            gpu = resources['gpu_info'][0]
-            log_verbose(f"Model loaded. GPU Memory usage: {gpu['memory_used']}MB/{gpu['memory_total']}MB "
-                       f"({gpu['memory_used']/gpu['memory_total']*100:.1f}%)")
+        try:
+            resources = system_monitor.get_system_resources()
+            gpu_devices = resources.get('gpu', {}).get('devices', [])
             
-            # Check if we can enable additional optimizations
-            if torch.cuda.is_available():
-                # Enable optimized attention if available (for newer PyTorch versions)
-                try:
-                    with model_cache['lock']:
-                        if model_cache['model'] is not None:
-                            # Try to enable flash attention or other optimizations
-                            if hasattr(torch.nn.functional, 'scaled_dot_product_attention'):
-                                log_verbose("Scaled dot product attention available - model should use optimized attention")
-                            
-                            # Enable torch compile if available (PyTorch 2.0+)
-                            if ENABLE_TORCH_COMPILE and hasattr(torch, 'compile'):
-                                log_verbose("Enabling PyTorch compile for maximum performance")
-                                try:
-                                    model = model_cache['model']  # Get model from cache
-                                    # Enable static cache for torch.compile compatibility
-                                    if hasattr(model, 'generation_config'):
-                                        model.generation_config.cache_implementation = "static"
-                                    
-                                    # Apply torch.compile with optimal settings
-                                    compiled_model = torch.compile(model, mode="reduce-overhead", fullgraph=True)
-                                    model_cache['model'] = compiled_model  # Update cache with compiled model
-                                    log_verbose("✓ Torch compile enabled - expect 4.5x speed improvement")
-                                except Exception as e:
-                                    logger.warning(f"Torch compile failed: {e}")
+            if gpu_devices:
+                gpu = gpu_devices[0]
+                log_verbose(f"Model loaded. GPU Memory usage: {gpu['memory_used']}MB/{gpu['memory_total']}MB "
+                           f"({gpu['memory_percent']:.1f}%)")
+                
+                # Check if we can enable additional optimizations
+                if torch.cuda.is_available():
+                    # Try to enable flash attention or other optimizations
+                    try:
+                        if hasattr(torch.nn.functional, 'scaled_dot_product_attention'):
+                            log_verbose("Scaled dot product attention available - model should use optimized attention")
+                        
+                        # Enable torch compile if available (PyTorch 2.0+)
+                        if ENABLE_TORCH_COMPILE and hasattr(torch, 'compile'):
+                            log_verbose("Enabling PyTorch compile for maximum performance")
+                            try:
+                                model = model_components['model']
+                                # Enable static cache for torch.compile compatibility
+                                if hasattr(model, 'generation_config'):
+                                    model.generation_config.cache_implementation = "static"
                                 
-                except Exception as e:
-                    logger.warning(f"Could not apply additional optimizations: {e}")
+                                # Apply torch.compile with optimal settings
+                                compiled_model = torch.compile(model, mode="reduce-overhead", fullgraph=True)
+                                
+                                # Update cache with compiled model
+                                cache_key = f"whisper_{WHISPER_MODEL}"
+                                cached_entry = model_cache_manager.get(cache_key)
+                                if cached_entry:
+                                    model_cache_manager.put(
+                                        cache_key,
+                                        model=compiled_model,
+                                        processor=cached_entry['processor'],
+                                        pipeline=cached_entry['pipeline'],
+                                        device=cached_entry['device']
+                                    )
+                                
+                                log_verbose("✓ Torch compile enabled - expect 4.5x speed improvement")
+                            except Exception as e:
+                                logger.warning(f"Torch compile failed: {e}")
+                            
+                    except Exception as e:
+                        logger.warning(f"Could not apply additional optimizations: {e}")
+        except Exception as e:
+            logger.debug(f"Error getting resource info: {e}")
         
         log_verbose("Model preloading and optimization completed successfully")
         return True
@@ -1109,11 +858,27 @@ def main(num_workers_arg, batch_size_arg, analyze_performance_arg=False, verbose
         # Also disable cuDNN
         os.environ['CUDNN_ENABLED'] = '0'
 
+    # Register cleanup handlers with process manager
+    process_manager.register_cleanup_handler(cleanup_whisper)
+    process_manager.register_cleanup_handler(cleanup_gpu_resources)
+    process_manager.register_cleanup_handler(cleanup_lock_files)
+    process_manager.register_cleanup_handler(lambda: model_cache_manager.clear())
+    process_manager.register_cleanup_handler(lambda: gpu_manager.stop_monitoring())
+    process_manager.register_cleanup_handler(lambda: system_monitor.stop_monitoring())
+
     # Create required directories
     ensure_dir(AUDIO_DIR)
     ensure_dir(TRANSCRIPTIONS_DIR)
     ensure_dir(CORRECTED_DIR)
     ensure_dir(LOG_DIR)
+
+    # Start monitoring systems
+    try:
+        gpu_manager.start_monitoring()
+        system_monitor.start_monitoring()
+        log_verbose("System monitoring started")
+    except Exception as e:
+        logger.warning(f"Error starting monitoring systems: {e}")
 
     # Preload and optimize the model
     if not preload_and_optimize_model():
@@ -1121,20 +886,44 @@ def main(num_workers_arg, batch_size_arg, analyze_performance_arg=False, verbose
         return
 
     # Main processing loop
-    while not shutdown_event.is_set():
+    while not process_manager.is_shutdown_requested():
         try:
+            # Optimize cache before processing
+            model_cache_manager.optimize_cache()
+            
             # Collect tasks
             transcription_tasks = collect_transcription_tasks()
             correction_tasks = collect_correction_tasks()
 
             if not transcription_tasks and not correction_tasks:
                 log_essential("No new tasks found. Waiting for new files...")
-                time.sleep(CHECK_INTERVAL)
+                # Check system health during idle time
+                try:
+                    health_status = system_monitor.get_health_status()
+                    if health_status['status'] == 'critical':
+                        logger.error("System health critical, consider reducing load")
+                    elif health_status['status'] == 'warning':
+                        logger.warning("System health warning detected")
+                except Exception as e:
+                    logger.debug(f"Error checking system health: {e}")
+                
+                # Wait with ability to respond to shutdown
+                process_manager.wait_for_shutdown(timeout=CHECK_INTERVAL)
                 continue
 
             # Process transcription tasks
             if transcription_tasks:
                 log_essential(f"Found {len(transcription_tasks)} files to transcribe")
+                
+                # Check GPU health before processing
+                try:
+                    if torch.cuda.is_available():
+                        for gpu_id in range(torch.cuda.device_count()):
+                            if not gpu_manager.monitor_temperature(gpu_id):
+                                logger.warning(f"GPU {gpu_id} temperature too high, reducing batch size")
+                                batch_size_arg = max(1, batch_size_arg // 2)
+                except Exception as e:
+                    logger.debug(f"Error checking GPU health: {e}")
                 
                 # Split tasks into batches
                 task_batches = split_tasks_into_batches(transcription_tasks, batch_size_arg)
@@ -1177,38 +966,60 @@ def main(num_workers_arg, batch_size_arg, analyze_performance_arg=False, verbose
                 
                 # Process corrections sequentially to avoid overwhelming Ollama
                 for task in correction_tasks:
-                    if shutdown_event.is_set():
+                    if process_manager.is_shutdown_requested():
                         break
                     correct_file(task)
 
             # Create backup after processing
-            backup_dir = create_backup()
-            log_verbose(f"Created backup in {backup_dir}")
-            
-            # Clean up old backups
-            cleanup_old_backups()
+            try:
+                backup_dir = create_backup()
+                log_verbose(f"Created backup in {backup_dir}")
+                
+                # Clean up old backups
+                cleanup_old_backups()
+            except Exception as e:
+                logger.error(f"Error creating backup: {e}")
+
+            # Log performance summary
+            try:
+                if verbose_logging:
+                    performance_summary = system_monitor.get_performance_summary(duration_minutes=30)
+                    if performance_summary:
+                        log_verbose("📊 Performance Summary (last 30 minutes):")
+                        log_verbose(f"   CPU: avg {performance_summary['cpu']['avg']:.1f}%, max {performance_summary['cpu']['max']:.1f}%")
+                        log_verbose(f"   Memory: avg {performance_summary['memory']['avg']:.1f}%, max {performance_summary['memory']['max']:.1f}%")
+                        
+                        # GPU performance summary
+                        for gpu_id, gpu_stats in performance_summary.get('gpu_summary', {}).items():
+                            log_verbose(f"   GPU {gpu_id}: avg {gpu_stats['memory_percent']['avg']:.1f}% memory, "
+                                       f"max temp {gpu_stats['temperature']['max']:.0f}°C")
+            except Exception as e:
+                logger.debug(f"Error logging performance summary: {e}")
 
             # Wait before next check
-            time.sleep(CHECK_INTERVAL)
+            process_manager.wait_for_shutdown(timeout=CHECK_INTERVAL)
 
         except KeyboardInterrupt:
             logger.info("KeyboardInterrupt received, initiating shutdown...")
-            shutdown_event.set()
+            process_manager.request_shutdown()
             break
         except Exception as e:
             logger.error(f"Error in main loop: {e}")
-            time.sleep(CHECK_INTERVAL)  # Wait before retrying
+            # Check if this is a critical error that should cause shutdown
+            if isinstance(e, (GPUError, ModelCacheError)):
+                logger.error("Critical system error detected, initiating shutdown...")
+                process_manager.request_shutdown()
+                break
+            else:
+                # Wait before retrying
+                process_manager.wait_for_shutdown(timeout=CHECK_INTERVAL)
 
-    # Final cleanup
-    cleanup_whisper()
-    cleanup_lock_files()
+    # Final cleanup is handled by process manager cleanup handlers
+    logger.info("Main processing loop completed")
 
 if __name__ == "__main__":
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-
     try:
-        log_essential("🚀 Starting TransFixer (Ollama Edition)...")
+        log_essential("🚀 Starting TransFixer (Enhanced Edition)...")
         parser = argparse.ArgumentParser(description="TransFixer: Transcribe and correct audio files.")
         parser.add_argument("--num-workers", type=int, choices=[1, 2], default=1, help="Number of worker processes for transcription (1 or 2). Default is 1.")
         parser.add_argument("--batch-size", type=int, default=8, help="Batch size for transcription tasks. Default is 8.")
@@ -1222,7 +1033,66 @@ if __name__ == "__main__":
         parser.add_argument("--list-models", action="store_true", help="List available models and exit.")
         parser.add_argument("--force-cpu", action="store_true", help="Force CPU-only mode (disable CUDA) - useful when CUDA/cuDNN has issues.")
         
+        # System management arguments
+        parser.add_argument("--system-info", action="store_true", help="Show system information and exit.")
+        parser.add_argument("--cache-info", action="store_true", help="Show model cache information and exit.")
+        
         args = parser.parse_args()
+        
+        # Handle system info option
+        if args.system_info:
+            try:
+                resources = system_monitor.get_system_resources()
+                health = system_monitor.get_health_status()
+                
+                print("🖥️  System Information:")
+                print(f"   Platform: {resources['system']['platform']}")
+                print(f"   WSL: {resources['system']['is_wsl']}")
+                print(f"   CPU: {resources['cpu']['count']} cores, {resources['cpu']['percent']:.1f}% usage")
+                print(f"   Memory: {resources['memory']['percent']:.1f}% used ({resources['memory']['used']/(1024**3):.1f}GB/{resources['memory']['total']/(1024**3):.1f}GB)")
+                
+                if resources['gpu']['cuda_available']:
+                    print(f"   CUDA: Available ({len(resources['gpu']['devices'])} devices)")
+                    for gpu in resources['gpu']['devices']:
+                        print(f"     GPU {gpu['id']}: {gpu['name']} - {gpu['memory_percent']:.1f}% memory used, {gpu['temperature']}°C")
+                else:
+                    print("   CUDA: Not available")
+                
+                print(f"\n📊 Health Status: {health['status'].upper()}")
+                if health.get('alerts'):
+                    print("   Alerts:")
+                    for alert in health['alerts']:
+                        print(f"     - {alert['message']}")
+                        
+            except Exception as e:
+                print(f"Error getting system info: {e}")
+            sys.exit(0)
+        
+        # Handle cache info option
+        if args.cache_info:
+            try:
+                cache_info = model_cache_manager.get_cache_info()
+                gpu_stats = gpu_manager.get_performance_stats()
+                
+                print("💾 Model Cache Information:")
+                print(f"   Total entries: {cache_info['total_entries']}")
+                print(f"   Total memory usage: {cache_info['total_memory_mb']:.1f} MB")
+                
+                if cache_info['entries']:
+                    print("   Cache entries:")
+                    for key, entry in cache_info['entries'].items():
+                        status = "EXPIRED" if entry['is_expired'] else "ACTIVE"
+                        print(f"     {key}: {entry['memory_size_mb']:.1f}MB, used {entry['use_count']} times, {status}")
+                
+                if gpu_stats:
+                    print(f"\n🎮 GPU Performance Stats:")
+                    for gpu_id, stats in gpu_stats.get('gpus', {}).items():
+                        print(f"   GPU {gpu_id}: avg {stats['avg_memory_usage']:.1f}% memory, max temp {stats['max_temperature']:.0f}°C")
+                        print(f"     Warnings: {stats['memory_warnings']} memory, {stats['temperature_warnings']} temperature")
+                        
+            except Exception as e:
+                print(f"Error getting cache info: {e}")
+            sys.exit(0)
         
         # Handle list models option
         if args.list_models:
@@ -1265,25 +1135,25 @@ if __name__ == "__main__":
             cleanup_lock_files()
             log_essential("✅ Lock file cleanup completed. You can now run TransFixer normally.")
             sys.exit(0)
+            
+        # Set shutdown timeout for process manager
+        process_manager.set_shutdown_timeout(30)
+        
+        # Run main application
         main(args.num_workers, args.batch_size, args.analyze_performance, args.verbose_logging, args.model, args.force_cpu)
 
     except KeyboardInterrupt:
-        logger.info("KeyboardInterrupt caught in __main__, ensuring shutdown event is set.")
-        shutdown_event.set()
+        logger.info("KeyboardInterrupt caught in __main__, requesting graceful shutdown...")
+        process_manager.request_shutdown()
     except SystemExit as e:
         logger.info(f"SystemExit caught in __main__ ({e}), proceeding to final cleanup.")
     except Exception as e:
         logger.error(f"Unhandled exception in __main__: {e}", exc_info=True)
-        shutdown_event.set()
+        process_manager.request_shutdown()
     finally:
         logger.info("Performing final script cleanup...")
-        if shutdown_event.is_set():
-            logger.info("Shutdown event was set. Ensuring resources are released.")
         
-        logger.info("Cleaning up lock files...")
-        cleanup_lock_files()
+        # The process manager will handle all cleanup through registered handlers
+        # No need for manual cleanup here as it's handled automatically
         
-        logger.info("Cleaning up Whisper model...")
-        cleanup_whisper() # This might still be an issue if workers didn't exit cleanly
-        
-        logger.info("Exiting TransFixer.")
+        logger.info("Enhanced TransFixer shutdown complete.")
