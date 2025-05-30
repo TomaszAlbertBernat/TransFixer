@@ -61,7 +61,146 @@
   - [x] Add batch prioritization ✅ **IMPLEMENTED** (task collection)
   - [x] Implement batch recovery ✅ **IMPLEMENTED** (retry logic)
 
-### 3.2 Resource Optimization ✅ **PARTIALLY COMPLETED**
+### 3.2 Parallel Pipeline Refactoring ⚠️ **HIGH PRIORITY OPTIMIZATION**
+**Current Inefficiency**: The system processes all transcriptions first, then all corrections sequentially. This wastes valuable time - as soon as a transcription completes, it could be sent to Ollama for correction while other transcriptions continue in parallel.
+
+- [ ] **Implement Producer-Consumer Pipeline** ⏳ **TODO** (HIGH IMPACT)
+  - [ ] Create transcription producer threads/processes ⏳ **TODO**
+    - [ ] Continuously transcribe audio files using available GPU resources
+    - [ ] Feed completed transcriptions to correction queue
+    - [ ] Maintain optimal GPU utilization
+  - [ ] Create correction consumer threads ⏳ **TODO**
+    - [ ] Consume completed transcriptions from queue
+    - [ ] Send requests to Ollama API in parallel
+    - [ ] Handle Ollama connection pooling and error handling
+  - [ ] Implement intelligent queue management ⏳ **TODO**
+    - [ ] Priority-based processing (newest files first, or by size)
+    - [ ] Queue size monitoring and backpressure handling
+    - [ ] Graceful shutdown of both producers and consumers
+
+- [ ] **Optimize Resource Utilization** ⏳ **TODO**
+  - [ ] **GPU Resources** (for transcription)
+    - [ ] Implement GPU resource reservation system
+    - [ ] Allow multiple transcription processes to share GPU efficiently
+    - [ ] Dynamic GPU memory allocation based on queue depth
+  - [ ] **Local Ollama Resources** (for correction)
+    - [ ] Implement connection pooling for local Ollama instance
+    - [ ] Optimize concurrent request handling (local = less throttling needed)
+    - [ ] Implement smart retry logic for connection errors
+  - [ ] **File System Resources**
+    - [ ] Optimize lock file handling for concurrent access
+    - [ ] Implement atomic write operations for transcriptions/corrections
+    - [ ] Add file system monitoring for real-time task discovery
+
+- [ ] **Pipeline Coordination** ⏳ **TODO**
+  - [ ] Implement work-stealing algorithm ⏳ **TODO**
+    - [ ] Allow idle transcription workers to help with corrections
+    - [ ] Balance workload between GPU and CPU-bound tasks
+  - [ ] Add pipeline metrics and monitoring ⏳ **TODO**
+    - [ ] Track transcription queue depth
+    - [ ] Monitor Ollama API response times and success rates
+    - [ ] Measure end-to-end pipeline throughput
+  - [ ] Implement adaptive throttling ⏳ **TODO**
+    - [ ] Slow down transcription if correction queue becomes too large
+    - [ ] Scale up correction workers based on queue depth
+    - [ ] Handle Ollama API errors gracefully
+
+- [ ] **Configuration and Tuning** ⏳ **TODO**
+  - [ ] Add pipeline configuration options ⏳ **TODO**
+    - [ ] `--max-transcription-workers` (default: 1-2 GPU processes)
+    - [ ] `--max-correction-workers` (default: 4-8 API threads)
+    - [ ] `--queue-max-size` (backpressure threshold)
+    - [ ] `--correction-batch-size` (batch multiple requests to Ollama)
+  - [ ] Implement smart defaults ⏳ **TODO**
+    - [ ] Auto-detect optimal worker counts based on hardware
+    - [ ] Adapt to Ollama API performance characteristics
+    - [ ] Consider file sizes and transcription complexity
+
+**Expected Benefits:**
+- 🚀 **3-5x overall throughput improvement** for large audio libraries
+- ⚡ **Immediate correction processing** - no waiting for full transcription batch
+- 🎯 **Better resource utilization** - GPU and network resources used simultaneously
+- 📊 **Scalable processing** - adapts to available hardware and API capacity
+- 🔄 **Continuous workflow** - no idle time between transcription and correction phases
+
+**Implementation Priority:** HIGH - This represents the single biggest performance optimization opportunity in the current system.
+
+### 3.3 LLM Optimization for Transcription ⚠️ **RESEARCH & OPTIMIZATION**
+**Current State**: Using Whisper models for transcription, but other LLMs might offer better accuracy, speed, or efficiency for specific use cases.
+
+**Current Implementation**: 
+- Transcription: Using hardcoded Whisper Turbo model
+- Correction: Using hardcoded Ollama phi4-mini-reasoning model (custom implementation)
+
+- [ ] **Evaluate Alternative Transcription Models** ⏳ **TODO** (LOW PRIORITY - RESEARCH PHASE)
+  - [ ] **Modern Open-Source Models** ⏳ **TODO**
+    - [ ] Test Faster-Whisper implementations (CTranslate2 backend)
+    - [ ] Evaluate OpenAI's Whisper variants (tiny, base, small, medium, large, turbo)
+    - [ ] Research Distil-Whisper models (faster with minimal accuracy loss)
+    - [ ] Test SpeechT5, Wav2Vec2, and other transformer-based models
+  - [ ] **Specialized/Fine-tuned Models** ⏳ **TODO**
+    - [ ] Domain-specific models (medical, legal, technical transcription)
+    - [ ] Language-specific optimized models
+    - [ ] Custom fine-tuned models for specific audio characteristics
+  - [ ] **Emerging Models** ⏳ **TODO**
+    - [ ] Research latest models from HuggingFace Transformers
+    - [ ] Evaluate commercial API alternatives (for comparison)
+    - [ ] Test multilingual transcription capabilities
+
+- [ ] **Performance Benchmarking** ⏳ **TODO** (LOW PRIORITY)
+  - [ ] **Accuracy Metrics** ⏳ **TODO**
+    - [ ] Word Error Rate (WER) testing across different models
+    - [ ] Character Error Rate (CER) for detailed accuracy
+    - [ ] Domain-specific accuracy testing (technical vs conversational)
+    - [ ] Multi-language accuracy comparison
+  - [ ] **Performance Metrics** ⏳ **TODO**
+    - [ ] Transcription speed (real-time factor) benchmarking
+    - [ ] Memory usage comparison across models
+    - [ ] GPU utilization efficiency testing
+    - [ ] Cold start vs warm model performance
+  - [ ] **Quality Metrics** ⏳ **TODO**
+    - [ ] Punctuation and capitalization accuracy
+    - [ ] Speaker diarization capabilities (if needed)
+    - [ ] Noise robustness testing
+    - [ ] Audio quality degradation handling
+
+- [ ] **Model Selection Framework** ⏳ **TODO** (LOW PRIORITY)
+  - [ ] **Adaptive Model Selection** ⏳ **TODO**
+    - [ ] Auto-detect audio characteristics (quality, language, domain)
+    - [ ] Select optimal model based on audio properties
+    - [ ] Implement model switching for different file types
+    - [ ] Create model recommendation system
+  - [ ] **Configuration Options** ⏳ **TODO**
+    - [ ] Add `--transcription-model` CLI parameter
+    - [ ] Implement model presets (fast, balanced, accurate)
+    - [ ] Add automatic model fallback on errors
+    - [ ] Create model performance profiles
+  - [ ] **Dynamic Optimization** ⏳ **TODO**
+    - [ ] Learn from transcription results to improve model selection
+    - [ ] Implement feedback loop for model performance
+    - [ ] Add user feedback integration for quality assessment
+
+- [ ] **Integration Improvements** ⏳ **TODO** (LOW PRIORITY)
+  - [ ] **Multi-Model Pipeline** ⏳ **TODO**
+    - [ ] Allow different models for different file types
+    - [ ] Implement cascade transcription (fast model → accurate model for uncertain parts)
+    - [ ] Add confidence-based model switching
+  - [ ] **Model Management** ⏳ **TODO**
+    - [ ] Implement intelligent model caching across different models
+    - [ ] Add model download and management system
+    - [ ] Create model version compatibility checking
+    - [ ] Implement model cleanup and optimization
+
+**Expected Benefits:**
+- 🎯 **Better transcription accuracy** through optimal model selection
+- ⚡ **Improved performance** with faster specialized models  
+- 🔄 **Adaptive processing** based on audio characteristics
+- 📊 **Measurable quality improvements** through systematic benchmarking
+- 🛠️ **User control** over speed vs accuracy trade-offs
+
+**Implementation Priority:** LOW - Current focus is on parallel processing implementation. Model research and selection will be addressed after core pipeline optimization.
+
+### 3.4 Resource Optimization ✅ **PARTIALLY COMPLETED**
 - [x] Implement adaptive resource allocation ✅ **IMPLEMENTED**
   - [x] Add CPU/GPU load balancing ✅ **IMPLEMENTED** (best GPU selection)
   - [x] Implement memory optimization ✅ **IMPLEMENTED** (cache management)

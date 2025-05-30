@@ -20,7 +20,7 @@ WHISPER_MODEL = "openai/whisper-large-v3-turbo"  # Fast and accurate model
 
 # --- Ollama Configuration ---
 OLLAMA_API_URL = "http://localhost:11434/api/chat"
-OLLAMA_MODEL = "llama3.2:3b"
+OLLAMA_MODEL = "phi4-mini-reasoning"
 OLLAMA_OPTIONS = {
     "temperature": 0.1,
     "top_k": 40,
