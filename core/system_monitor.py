@@ -27,7 +27,7 @@ class SystemMonitor:
         # Resource thresholds
         self.cpu_threshold = 90.0  # %
         self.memory_threshold = 85.0  # %
-        self.gpu_memory_threshold = 90.0  # %
+        self.gpu_memory_threshold = 95.0  # % - Increased to reduce false alarms from external processes
         self.gpu_temperature_threshold = 85.0  # °C
         
         # Metrics history
@@ -320,12 +320,14 @@ class SystemMonitor:
                 # Check for alerts
                 alerts = self.check_resource_alerts(resources)
                 
-                # Log critical alerts
+                # Log only critical alerts to reduce noise from external processes
                 for alert in alerts:
                     if alert['severity'] == 'critical':
                         logger.error(alert['message'])
                     elif alert['severity'] == 'warning':
-                        logger.warning(alert['message'])
+                        # Only log non-GPU warnings to avoid spam from external GPU usage
+                        if not alert['type'].startswith('gpu_'):
+                            logger.warning(alert['message'])
                 
                 # Store metrics history
                 self.metrics_history.append((resources['timestamp'], {

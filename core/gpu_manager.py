@@ -17,12 +17,12 @@ logger = logging.getLogger(__name__)
 class GPUManager:
     """Manages GPU resources, memory allocation, and temperature monitoring."""
     
-    def __init__(self, temperature_threshold: float = 85.0, memory_threshold: float = 0.9):
+    def __init__(self, temperature_threshold: float = 85.0, memory_threshold: float = 0.95):
         self.temperature_threshold = temperature_threshold
-        self.memory_threshold = memory_threshold
+        self.memory_threshold = memory_threshold  # Increased to 95% to reduce false alarms
         self.monitoring_enabled = False
         self.monitoring_thread: Optional[threading.Thread] = None
-        self.monitoring_interval = 30  # seconds
+        self.monitoring_interval = 60  # Increased to 60 seconds to reduce noise
         self._shutdown_event = threading.Event()
         
         # GPU state tracking
@@ -33,6 +33,10 @@ class GPUManager:
         # Performance tracking
         self.memory_usage_history: List[Tuple[datetime, Dict]] = []
         self.max_history_size = 100
+        
+        # Warning suppression for external processes
+        self.warning_cooldown = timedelta(minutes=5)  # Only warn every 5 minutes
+        self.last_warning_time: Dict[str, datetime] = {}
         
         self._initialize_gpu_states()
     
@@ -129,7 +133,17 @@ class GPUManager:
             logger.error(f"Error getting GPU info: {e}")
             raise GPUError(f"Failed to get GPU info: {e}")
     
-    def monitor_temperature(self, gpu_id: int) -> bool:
+    def _should_warn(self, warning_type: str) -> bool:
+        """Check if we should issue a warning based on cooldown period."""
+        now = datetime.now()
+        last_warning = self.last_warning_time.get(warning_type)
+        
+        if last_warning is None or (now - last_warning) > self.warning_cooldown:
+            self.last_warning_time[warning_type] = now
+            return True
+        return False
+
+    def monitor_temperature(self, gpu_id: int, suppress_warnings: bool = False) -> bool:
         """Monitor GPU temperature and return True if safe to continue."""
         try:
             gpu_info = self.get_gpu_info(gpu_id)
@@ -137,10 +151,14 @@ class GPUManager:
             
             if temperature > self.temperature_threshold:
                 self.gpu_states[gpu_id]['temperature_warnings'] += 1
-                logger.warning(f"GPU {gpu_id} temperature high: {temperature}°C (threshold: {self.temperature_threshold}°C)")
                 
-                if temperature > self.temperature_threshold + 10:
-                    logger.error(f"GPU {gpu_id} temperature critical: {temperature}°C, requesting load reduction")
+                # Only warn if not suppressed and cooldown period has passed
+                if not suppress_warnings and self._should_warn(f"temp_{gpu_id}"):
+                    logger.warning(f"GPU {gpu_id} temperature high: {temperature}°C (threshold: {self.temperature_threshold}°C)")
+                
+                if temperature > self.temperature_threshold + 15:  # Increased critical threshold
+                    if not suppress_warnings:
+                        logger.error(f"GPU {gpu_id} temperature critical: {temperature}°C, requesting load reduction")
                     return False
                     
             return True
@@ -149,16 +167,22 @@ class GPUManager:
             logger.error(f"Error monitoring GPU temperature: {e}")
             return True  # Assume safe if we can't monitor
     
-    def check_memory_usage(self, gpu_id: int) -> Tuple[bool, float]:
+    def check_memory_usage(self, gpu_id: int, suppress_warnings: bool = False) -> Tuple[bool, float]:
         """Check GPU memory usage and return (is_safe, usage_percent)."""
         try:
             gpu_info = self.get_gpu_info(gpu_id)
             usage_percent = gpu_info['memory_percent'] / 100
             
+            # Only warn if memory is critically high (95%+) and we haven't warned recently
             if usage_percent > self.memory_threshold:
                 self.gpu_states[gpu_id]['memory_warnings'] += 1
-                logger.warning(f"GPU {gpu_id} memory usage high: {usage_percent:.1%} (threshold: {self.memory_threshold:.1%})")
-                return False, usage_percent
+                
+                if not suppress_warnings and self._should_warn(f"memory_{gpu_id}"):
+                    logger.warning(f"GPU {gpu_id} memory usage critically high: {usage_percent:.1%} (threshold: {self.memory_threshold:.1%})")
+                
+                # Only return False if memory is extremely high (98%+)
+                if usage_percent > 0.98:
+                    return False, usage_percent
                 
             return True, usage_percent
             
@@ -333,9 +357,10 @@ class GPUManager:
                     'load': gpu_info['load']
                 }
                 
-                # Check for warnings
-                self.monitor_temperature(gpu_id)
-                self.check_memory_usage(gpu_id)
+                # Check for warnings but suppress them during background monitoring
+                # to avoid spam from external processes like Ollama
+                self.monitor_temperature(gpu_id, suppress_warnings=True)
+                self.check_memory_usage(gpu_id, suppress_warnings=True)
                 
             except Exception as e:
                 logger.debug(f"Error collecting metrics for GPU {gpu_id}: {e}")
@@ -351,9 +376,10 @@ class GPUManager:
         """Perform automatic cleanup based on usage patterns."""
         try:
             for gpu_id in range(torch.cuda.device_count()):
-                is_safe, usage_percent = self.check_memory_usage(gpu_id)
+                is_safe, usage_percent = self.check_memory_usage(gpu_id, suppress_warnings=True)
                 
-                if not is_safe or usage_percent > 0.8:
+                # Only trigger cleanup if memory is extremely high (98%+)
+                if not is_safe or usage_percent > 0.98:
                     logger.info(f"Auto-cleanup triggered for GPU {gpu_id} (usage: {usage_percent:.1%})")
                     self.cleanup_gpu_memory(gpu_id)
                     

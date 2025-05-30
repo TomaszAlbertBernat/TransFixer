@@ -919,7 +919,8 @@ def main(num_workers_arg, batch_size_arg, analyze_performance_arg=False, verbose
                 try:
                     if torch.cuda.is_available():
                         for gpu_id in range(torch.cuda.device_count()):
-                            if not gpu_manager.monitor_temperature(gpu_id):
+                            # Suppress warnings during health check to avoid spam from external processes
+                            if not gpu_manager.monitor_temperature(gpu_id, suppress_warnings=True):
                                 logger.warning(f"GPU {gpu_id} temperature too high, reducing batch size")
                                 batch_size_arg = max(1, batch_size_arg // 2)
                 except Exception as e:
