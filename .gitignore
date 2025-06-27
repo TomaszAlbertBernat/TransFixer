@@ -35,11 +35,7 @@ MANIFEST
 # !audio/sample_test.mp3
 audio/
 transcriptions/
-corrected/
 backup/
-Nowy folder
-Linki.txt
-TODO.md
 embeddings/
 
 # Log files and directories
@@ -49,10 +45,9 @@ logs/
 # transcription_errors.log
 
 # Configuration files that might contain sensitive data or local paths
-# It's highly recommended to ignore config.py and provide a
-# config.py.template or config.py.example file for users to copy and customize.
-# This prevents accidental commits of local settings or future API keys.
-config.py
+# If you have local customizations to config.py, create config.local.py
+# and add sensitive settings there instead
+config.local.py
 
 # IDE and Editor specific files
 .vscode/
