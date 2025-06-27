@@ -9,6 +9,7 @@ from pathlib import Path
 import signal
 import sys
 from datetime import datetime, timedelta
+from typing import Optional
 import torch
 from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
 from torch.cuda.amp import autocast
@@ -156,6 +157,10 @@ def initialize_whisper():
         elif ENABLE_SDPA:
             model_kwargs["attn_implementation"] = "sdpa"
             log_verbose(f"Process {process_id}: Using SDPA (Scaled Dot Product Attention)")
+        
+        # Ensure WHISPER_MODEL is not None
+        if not WHISPER_MODEL:
+            raise ValueError("WHISPER_MODEL cannot be None or empty")
         
         model = AutoModelForSpeechSeq2Seq.from_pretrained(WHISPER_MODEL, **model_kwargs)
         model.to(device)
@@ -707,7 +712,7 @@ def preload_and_optimize_model():
         logger.error(f"Error during model preloading and optimization: {e}")
         return False
 
-def main(num_workers_arg, batch_size_arg, analyze_performance_arg=False, verbose_logging_arg=False, model_arg=None, force_cpu_arg=False):
+def main(num_workers_arg: int, batch_size_arg: int, analyze_performance_arg: bool = False, verbose_logging_arg: bool = False, model_arg: Optional[str] = None, force_cpu_arg: bool = False):
     global analyze_performance, verbose_logging, WHISPER_MODEL
     analyze_performance = analyze_performance_arg
     verbose_logging = verbose_logging_arg
@@ -729,9 +734,15 @@ def main(num_workers_arg, batch_size_arg, analyze_performance_arg=False, verbose
                 "distil-large-v3": "distil-whisper/distil-large-v3",
                 "distil-medium.en": "distil-whisper/distil-medium.en"
             }
-            WHISPER_MODEL = model_mapping.get(model_arg, model_arg)
+            # Ensure we get a valid model name, fallback to model_arg if not in mapping
+            WHISPER_MODEL = model_mapping.get(model_arg, model_arg) or model_arg
         else:
             WHISPER_MODEL = model_arg
+        
+        # Additional safety check to ensure WHISPER_MODEL is not None or empty
+        if not WHISPER_MODEL:
+            raise ValueError(f"Invalid model argument: {model_arg}")
+            
         log_verbose(f"Model overridden via command line: {WHISPER_MODEL}")
     
     # Handle force CPU option

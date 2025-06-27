@@ -59,6 +59,13 @@ config.local.py
 .settings/
 *.tmproj
 
+# Spell checker configuration files
+.cspell.json
+.cspell-dict.txt
+
+# Documentation files
+CHANGELOG.md
+
 # Operating System specific files
 .DS_Store
 Thumbs.db
