@@ -27,26 +27,26 @@ MAX_BACKUPS = 1  # Maximum number of backups to keep
 
 # --- Basic Performance Settings ---
 ENABLE_MIXED_PRECISION = True  # Enable automatic mixed precision for faster inference
-GPU_MEMORY_FRACTION = 0.9  # Use 80% of available GPU memory
-MAX_BATCH_SIZE = 24  # Maximum batch size for transcription - increased for better GPU utilization
+GPU_MEMORY_FRACTION = 0.95  # Increased from 0.9 to 0.95 for better GPU utilization
+MAX_BATCH_SIZE = 32  # Increased from 24 to 32 for better GPU utilization
 DEFAULT_CHUNK_LENGTH = 30  # Default chunk length in seconds
 MIN_CHUNK_LENGTH = 20  # Minimum chunk length
-MAX_CHUNK_LENGTH = 60  # Maximum chunk length
+MAX_CHUNK_LENGTH = 90  # Increased from 60 to 90 for better efficiency on longer audio
 
 # --- Advanced Performance Settings ---
-PERFORMANCE_MODE = "balanced"  # Options: "conservative", "balanced", "aggressive"
-MEMORY_SAFETY_FACTOR = 0.8  # Memory safety factor for batch sizing
+PERFORMANCE_MODE = "aggressive"  # Changed from "balanced" to "aggressive" for maximum GPU usage
+MEMORY_SAFETY_FACTOR = 0.9  # Increased from 0.8 for more aggressive memory usage
 
 # --- Flash Attention Configuration ---
-ENABLE_FLASH_ATTENTION = False  # Enable Flash Attention 2 if available
+ENABLE_FLASH_ATTENTION = True  # Changed from False to True - can improve GPU utilization
 FLASH_ATTENTION_AVAILABLE = False  # Will be detected automatically
-ATTENTION_IMPLEMENTATION = "sdpa"  # Options: "sdpa", "flash_attention_2", "eager"
-ENABLE_SDPA = True  # Enable Scaled Dot Product Attention
+ATTENTION_IMPLEMENTATION = "flash_attention_2"  # Changed from "sdpa" to try flash attention first
+ENABLE_SDPA = True  # Keep as fallback
 
 # --- PyTorch Compile Configuration ---
 ENABLE_TORCH_COMPILE = True  # Enable torch.compile for PyTorch 2.0+ - may improve GPU utilization
-TORCH_COMPILE_MODE = "reduce-overhead"  # Options: "default", "reduce-overhead", "max-autotune"
+TORCH_COMPILE_MODE = "max-autotune"  # Changed from "reduce-overhead" to "max-autotune" for better GPU usage
 TORCH_COMPILE_FULLGRAPH = True  # Enable fullgraph mode for torch.compile
 
 # --- Performance Monitoring ---
-PERFORMANCE_MONITORING_AVAILABLE = False  # Advanced performance monitoring (requires extra dependencies)
+PERFORMANCE_MONITORING_AVAILABLE = True  # Changed from False to True to monitor improvements
