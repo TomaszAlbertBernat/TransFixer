@@ -260,33 +260,35 @@ class GPUManager:
         except Exception as e:
             logger.error(f"Error during GPU memory defragmentation: {e}")
     
-    def calculate_optimal_batch_size(self, gpu_id: int, safety_factor: float = 0.8) -> int:
+    def calculate_optimal_batch_size(self, gpu_id: int, safety_factor: float = 0.85) -> int:
         """Calculate optimal batch size based on available GPU memory."""
         try:
             gpu_info = self.get_gpu_info(gpu_id)
             available_memory_mb = gpu_info['memory_available']
             
-            # Apply safety factor
+            # Apply safety factor - slightly more aggressive for better GPU utilization
             safe_memory = available_memory_mb * safety_factor
             
-            # Estimate batch size based on memory
-            # These values are based on Whisper model memory requirements
-            if safe_memory > 10000:   # 10GB+
-                return min(24, 32)
+            # More aggressive batch sizing for better GPU utilization
+            # These values are optimized for transcription workloads
+            if safe_memory > 12000:   # 12GB+
+                return min(32, 40)
+            elif safe_memory > 10000:   # 10GB+
+                return min(28, 32)
             elif safe_memory > 8000:  # 8GB+
-                return min(20, 24)
+                return min(24, 28)
             elif safe_memory > 6000:  # 6GB+
-                return min(16, 20)
+                return min(20, 24)
             elif safe_memory > 4000:  # 4GB+
-                return min(12, 16)
+                return min(16, 20)
             elif safe_memory > 2000:  # 2GB+
-                return min(8, 12)
+                return min(12, 16)
             else:
-                return min(4, 8)
+                return min(8, 12)
                 
         except Exception as e:
             logger.error(f"Error calculating optimal batch size: {e}")
-            return 4  # Safe default
+            return 8  # Slightly higher safe default
     
     def start_monitoring(self):
         """Start background GPU monitoring."""
