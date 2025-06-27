@@ -50,7 +50,7 @@ shutdown_event = threading.Event()
 # --- START: Configuration ---
 AUDIO_DIR = "audio"
 TRANSCRIPTIONS_DIR = "transcriptions"
-CORRECTED_DIR = "corrected"
+
 LOG_DIR = "logs"
 LOG_FILE = os.path.join(LOG_DIR, "transcription_errors.log")
 MIN_CHARS = 50
